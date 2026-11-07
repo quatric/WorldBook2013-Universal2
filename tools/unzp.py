@@ -44,7 +44,7 @@ for task in p['YAAllTasksRepresentationsKey']:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         forks = {f.get('ForkName', ''): f for f in e.get('Forks', [])}
         if kind == 'NSFileTypeSymbolicLink':
-            target = read_fork(forks['']).decode() if '' in forks else attrs.get('NSFileSymLinkDestination', '')
+            target = e.get('SymLinkData') or (read_fork(forks['']).decode() if '' in forks else attrs.get('NSFileSymLinkDestination', ''))
             if os.path.lexists(path):
                 os.remove(path)
             os.symlink(target, path)

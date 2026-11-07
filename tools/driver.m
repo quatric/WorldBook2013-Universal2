@@ -1,0 +1,299 @@
+// Test driver injected (DYLD_INSERT_LIBRARIES) into a built app for trial
+// runs; never part of the shipped app. Runs the steps in WB_DRIVE, one per
+// line or separated by ';':
+//   wait <seconds>        click <title>        type <text>
+//   key <return|tab|esc>  shot <file.png>      views  (prints the view tree)
+//   menu <item title>     windows
+//   trace <level>         (translated runtime's XL_VERBOSE)
+//   players               (state of AVPlayerLayers)
+//   keys <text>           (key events per character)
+//   mouse <x> <y>         move <x> <y>  (points in a `shot` of the key window)
+// Buttons, matrix cells and menu items are found by title in all windows.
+// WB_DRIVE_STEPS=1 logs each step as it starts.
+#import <Cocoa/Cocoa.h>
+#import <AVFoundation/AVFoundation.h>
+#include <dlfcn.h>
+#include <objc/runtime.h>
+
+static NSMutableArray *sSteps;
+
+static void Log(NSString *aFormat, ...)
+{
+	va_list args;
+	va_start(args, aFormat);
+	NSString *s = [[NSString alloc] initWithFormat:aFormat arguments:args];
+	va_end(args);
+	fprintf(stderr, "drive: %s\n", [s UTF8String]);
+}
+
+static NSArray *Windows(void)
+{
+	NSMutableArray *result = [NSMutableArray array];
+	for (NSWindow *w in [NSApp orderedWindows])
+		if ([w isVisible])
+			[result addObject:w];
+	return result;
+}
+
+static BOOL ClickIn(NSView *aView, NSString *aTitle)
+{
+	if ([aView isHidden])
+		return NO;
+	if ([aView isKindOfClass:[NSMatrix class]]) {
+		NSMatrix *m = (NSMatrix *)aView;
+		for (NSInteger r = 0; r < [m numberOfRows]; r++)
+			for (NSInteger c = 0; c < [m numberOfColumns]; c++) {
+				NSCell *cell = [m cellAtRow:r column:c];
+				if ([[cell title] isEqualToString:aTitle] && [cell isEnabled]) {
+					[m selectCellAtRow:r column:c];
+					[m sendAction];
+					return YES;
+				}
+			}
+	}
+	if ([aView isKindOfClass:[NSButton class]] && [(NSButton *)aView isEnabled]
+		&& ([[(NSButton *)aView title] isEqualToString:aTitle] || [[(NSButton *)aView alternateTitle] isEqualToString:aTitle])) {
+		[(NSButton *)aView performClick:nil];
+		return YES;
+	}
+	for (NSView *v in [aView subviews])
+		if (ClickIn(v, aTitle))
+			return YES;
+	return NO;
+}
+
+static BOOL MenuIn(NSMenu *aMenu, NSString *aTitle)
+{
+	for (NSInteger i = 0; i < [aMenu numberOfItems]; i++) {
+		NSMenuItem *item = [aMenu itemAtIndex:i];
+		if ([[item title] isEqualToString:aTitle]) {
+			[aMenu performActionForItemAtIndex:i];
+			return YES;
+		}
+		if ([item hasSubmenu] && MenuIn([item submenu], aTitle))
+			return YES;
+	}
+	return NO;
+}
+
+static void Dump(NSView *aView, int aDepth)
+{
+	NSString *extra = @"";
+	if ([aView respondsToSelector:@selector(title)] && ![aView isKindOfClass:[NSBox class]])
+		extra = [NSString stringWithFormat:@" \"%@\"", [(id)aView title]];
+	else if ([aView isKindOfClass:[NSTextField class]])
+		extra = [NSString stringWithFormat:@" '%@'", [(NSTextField *)aView stringValue]];
+	Log(@"%*s%@ %@%@%@", aDepth * 2, "", NSStringFromClass([aView class]), NSStringFromRect([aView frame]), extra, [aView isHidden] ? @" hidden" : @"");
+	for (NSView *v in [aView subviews])
+		Dump(v, aDepth + 1);
+}
+
+static void Shot(NSString *aPath)
+{
+	NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow] ?: [Windows() firstObject];
+	NSView *view = [[w contentView] superview] ?: [w contentView];
+	if (view == nil) {
+		Log(@"no window to shoot");
+		return;
+	}
+	NSBitmapImageRep *rep = [view bitmapImageRepForCachingDisplayInRect:[view bounds]];
+	[view cacheDisplayInRect:[view bounds] toBitmapImageRep:rep];
+	[[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:aPath atomically:YES];
+	Log(@"shot %@ (%@)", aPath, NSStringFromClass([w class]));
+}
+
+static void Key(NSString *aName)
+{
+	NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow];
+	NSDictionary *codes = @{ @"return": @[@"\r", @36], @"tab": @[@"\t", @48], @"esc": @[@"\x1b", @53] };
+	NSArray *k = codes[aName];
+	NSEvent *e = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:[w windowNumber] context:nil characters:k[0] charactersIgnoringModifiers:k[0] isARepeat:NO keyCode:[k[1] unsignedShortValue]];
+	[NSApp postEvent:e atStart:NO];
+}
+
+// ANSI key codes, for apps that look at -keyCode as well as the characters
+static unsigned short KeyCode(unichar aChar)
+{
+	static const char *rows = "asdfhgzxcv\0bqweryt123465=97-80]ou[ip\rlj'k;\\,/nm.\t `";
+	unichar c = aChar >= 'A' && aChar <= 'Z' ? aChar - 'A' + 'a' : aChar;
+	for (unsigned short i = 0; i < 51; i++)
+		if (rows[i] == c && rows[i] != 0)
+			return i;
+	return 0;
+}
+
+// posts real key down/up events for each character, through the event queue
+static void Keys(NSString *aText)
+{
+	NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow] ?: Windows().firstObject;
+	NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
+	for (NSUInteger i = 0; i < [aText length]; i++) {
+		unichar ch = [aText characterAtIndex:i];
+		NSString *s = [NSString stringWithCharacters:&ch length:1];
+		NSEventModifierFlags m = (ch >= 'A' && ch <= 'Z') ? NSEventModifierFlagShift : 0;
+		for (int up = 0; up < 2; up++)
+			[NSApp postEvent:[NSEvent keyEventWithType:up ? NSEventTypeKeyUp : NSEventTypeKeyDown location:NSZeroPoint modifierFlags:m timestamp:now + i * 0.1 + up * 0.05 windowNumber:[w windowNumber] context:nil characters:s charactersIgnoringModifiers:[s lowercaseString] isARepeat:NO keyCode:KeyCode(ch)] atStart:NO];
+	}
+}
+
+// reports the AVPlayerLayers in a layer tree (their content isn't in shots)
+static void Players(CALayer *aLayer)
+{
+	if ([aLayer isKindOfClass:[AVPlayerLayer class]]) {
+		AVPlayer *p = [(AVPlayerLayer *)aLayer player];
+		AVPlayerItem *item = [p currentItem];
+		Log(@"player %@: status %ld, item status %ld, rate %.2f, time %.2f of %.2f, ready %d, hidden %d, frame %@, error %@",
+			[[(AVURLAsset *)[item asset] URL] lastPathComponent], (long)[p status], (long)[item status], [p rate],
+			CMTimeGetSeconds([p currentTime]), CMTimeGetSeconds([item duration]), [(AVPlayerLayer *)aLayer isReadyForDisplay],
+			[aLayer isHidden], NSStringFromRect(NSRectFromCGRect([aLayer frame])), [item error] ?: [p error]);
+	}
+	for (CALayer *l in [aLayer sublayers])
+		Players(l);
+}
+
+// runs a block from the main run loop in common modes; unlike the main
+// dispatch queue this also happens inside nested (modal, tracking) loops
+// started by an earlier block
+static void Later(void (^aBlock)(void))
+{
+	CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, aBlock);
+	CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
+static void Next(void);
+
+static void Run(NSString *aLine)
+{
+	NSString *line = [aLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+	NSRange space = [line rangeOfString:@" "];
+	NSString *cmd = space.location == NSNotFound ? line : [line substringToIndex:space.location];
+	NSString *arg = space.location == NSNotFound ? @"" : [line substringFromIndex:space.location + 1];
+	if (getenv("WB_DRIVE_STEPS"))
+		Log(@"step: %@", line);
+	if ([cmd isEqualToString:@"wait"]) {
+		NSTimer *t = [NSTimer timerWithTimeInterval:[arg doubleValue] repeats:NO block:^(NSTimer *aTimer) { Next(); }];
+		[[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+		return;
+	}
+	if ([cmd isEqualToString:@"click"]) {
+		BOOL done = NO;
+		for (NSWindow *w in Windows())
+			if ((done = ClickIn([[w contentView] superview] ?: [w contentView], arg)))
+				break;
+		Log(@"click %@: %@", arg, done ? @"ok" : @"NOT FOUND");
+	} else if ([cmd isEqualToString:@"menu"]) {
+		Log(@"menu %@: %@", arg, MenuIn([NSApp mainMenu], arg) ? @"ok" : @"NOT FOUND");
+	} else if ([cmd isEqualToString:@"type"]) {
+		NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow];
+		id responder = [w firstResponder];
+		if ([responder respondsToSelector:@selector(insertText:)])
+			[responder insertText:arg];
+		Log(@"type into %@", NSStringFromClass([responder class]));
+	} else if ([cmd isEqualToString:@"mouse"] || [cmd isEqualToString:@"move"]) {
+		// x y in the coordinates of a `shot` of the key window (top left origin)
+		NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow] ?: Windows().firstObject;
+		NSArray *xy = [arg componentsSeparatedByString:@" "];
+		NSPoint p = NSMakePoint([xy[0] doubleValue], NSHeight([w frame]) - [xy[1] doubleValue]);
+		if ([cmd isEqualToString:@"move"]) {
+			[w sendEvent:[NSEvent mouseEventWithType:NSEventTypeMouseMoved location:p modifierFlags:0 timestamp:0 windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:0 pressure:0]];
+		} else {
+			// queued, not sent: a mouse-down handler may run its own
+			// tracking loop that waits for the mouse-up
+			NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
+			NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:p modifierFlags:0 timestamp:now windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:1 pressure:1];
+			NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:p modifierFlags:0 timestamp:now + 0.05 windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:1 pressure:0];
+			[NSApp postEvent:down atStart:NO];
+			[NSApp postEvent:up atStart:NO];
+		}
+		NSView *frame = [[w contentView] superview] ?: [w contentView];
+		Log(@"%@ %@ in %@, hits %@ (app %@, window %@)", cmd, NSStringFromPoint(p), NSStringFromClass([w class]), [frame hitTest:[frame convertPoint:p fromView:nil]], [NSApp isActive] ? @"active" : @"inactive", [w isKeyWindow] ? @"key" : @"not key");
+	} else if ([cmd isEqualToString:@"trace"]) {
+		// sets the translated runtime's verbosity from here on
+		int *v = dlsym(RTLD_DEFAULT, "xl_verbose");
+		if (v)
+			*v = [arg intValue];
+		Log(@"trace %@%@", arg, v ? @"" : @" (no runtime)");
+	} else if ([cmd isEqualToString:@"players"]) {
+		for (NSWindow *w in Windows())
+			Players([[[w contentView] superview] ?: [w contentView] layer]);
+		Log(@"players done");
+	} else if ([cmd isEqualToString:@"keys"]) {
+		Keys(arg);
+		Log(@"keys %@", arg);
+	} else if ([cmd isEqualToString:@"key"]) {
+		Key(arg);
+	} else if ([cmd isEqualToString:@"shot"]) {
+		Shot(arg);
+	} else if ([cmd isEqualToString:@"views"]) {
+		for (NSWindow *w in Windows()) {
+			Log(@"window %@ %@ \"%@\"", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title]);
+			Dump([w contentView], 1);
+		}
+	} else if ([cmd isEqualToString:@"windows"]) {
+		for (NSWindow *w in Windows())
+			Log(@"window %@ %@ \"%@\"%@", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"");
+	}
+	Next();
+}
+
+static void Next(void)
+{
+	if ([sSteps count] == 0)
+		return;
+	NSString *line = sSteps[0];
+	[sSteps removeObjectAtIndex:0];
+	Later(^{
+		@try {
+			Run(line);
+		} @catch (NSException *e) {
+			Log(@"exception in '%@': %@\n%@", line, e, [[e callStackSymbols] componentsJoinedByString:@"\n"]);
+			Next();
+		}
+	});
+}
+
+// The app under test usually runs in the background (often with the screen
+// locked), where a window spends a click on activating the app unless the
+// view under it accepts first mouse; let every view take it, as the
+// Classroom's MBFirstMouseView does.
+static BOOL AcceptsFirstMouse(id self, SEL _cmd, NSEvent *anEvent)
+{
+	return YES;
+}
+
+// WB_SKIP_AUTOMATION=1: the Typing Speed Gauge login-item methods talk to
+// System Events through AppleScript, which blocks on the Automation consent
+// prompt until someone answers it; answer "not a login item" and do nothing.
+static BOOL NotLoginItem(id self, SEL _cmd)
+{
+	return NO;
+}
+
+static void SkipAutomation(void)
+{
+	Class c = NSClassFromString(@"MBUtilities");
+	for (NSString *name in @[@"isTypingSpeedGaugeLoginItem", @"makeTypingSpeedGaugeLoginItem", @"deleteTypingSpeedGaugeLoginItem"]) {
+		SEL sel = NSSelectorFromString(name);
+		Method m = class_getInstanceMethod(c, sel) ?: class_getClassMethod(c, sel);
+		if (m)
+			method_setImplementation(m, (IMP)NotLoginItem);   // also fine for the void ones
+		Log(@"%@ %@", name, m ? @"skipped" : @"not found");
+	}
+}
+
+__attribute__((constructor)) static void Start(void)
+{
+	const char *steps = getenv("WB_DRIVE");
+	if (steps == NULL)
+		return;
+	method_setImplementation(class_getInstanceMethod([NSView class], @selector(acceptsFirstMouse:)), (IMP)AcceptsFirstMouse);
+	if (getenv("WB_SKIP_AUTOMATION"))
+		[[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillFinishLaunchingNotification object:nil queue:nil usingBlock:^(NSNotification *n) { SkipAutomation(); }];
+	sSteps = [[NSMutableArray alloc] init];
+	for (NSString *s in [[NSString stringWithUTF8String:steps] componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@";\n"]])
+		if ([[s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] length] != 0)
+			[sSteps addObject:s];
+	// Run loop timers in common modes keep firing inside modal sessions.
+	NSTimer *t = [NSTimer timerWithTimeInterval:0.1 repeats:NO block:^(NSTimer *aTimer) { Next(); }];
+	[[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+}

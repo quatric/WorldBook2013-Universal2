@@ -79,6 +79,7 @@ class MachO32:
         self._symbols()
         self._imports()
         self._relocs()
+        self.rebases |= self.local_rebases
 
     # ---- helpers ---------------------------------------------------------
     def section(self, seg, name):
@@ -128,6 +129,7 @@ class MachO32:
         self.stubs = {}      # stub address -> symbol
         self.slots = {}      # pointer slot address -> symbol (bound at load)
         self.local_slots = {}  # pointer slot -> None for INDIRECT_SYMBOL_LOCAL (already holds the address)
+        self.local_rebases = set()
         for s in self.sections:
             t = s.type
             if t == S_SYMBOL_STUBS:
@@ -143,6 +145,8 @@ class MachO32:
                     a = s.addr + 4 * k
                     if i & (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS):
                         self.local_slots[a] = None
+                        if i == INDIRECT_SYMBOL_LOCAL:
+                            self.local_rebases.add(a)   # dyld slides these itself
                         continue
                     self.slots[a] = self.syms[i][0]
 
