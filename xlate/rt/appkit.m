@@ -30,7 +30,7 @@ static NSBitmapImageRep *window_bitmap(NSWindow *w, BOOL create)
 static BOOL offscreen_focus(NSView *v)
 {
 	NSWindow *w = [v window];
-	if (!w || [w isVisible])
+	if (!w || [w isVisible] || getenv("XL_NOOFFSCREEN"))
 		return NO;
 	NSBitmapImageRep *b = window_bitmap(w, YES);
 	if (!b)
@@ -128,6 +128,28 @@ static BOOL xl_drawingToScreen(id self, SEL _cmd)
 	if (![NSGraphicsContext currentContext])
 		return YES;
 	return ((BOOL (*)(id, SEL))orig_drawingToScreen)(self, _cmd);
+}
+
+// ---- -[NSView isFlipped] -------------------------------------------------------------------
+// SMKAppKit's NSView(EXThreadFlippedView) category replaces -[NSView isFlipped]
+// with "is this the view pushed as flipped on this thread". Current AppKit's
+// own implementation answers for its private views (the title bar's text among
+// them), so the original stays the answer unless the guest pushed the view.
+static IMP view_isFlipped_orig, view_isFlipped_guest;
+static BOOL xl_view_isFlipped(NSView *self, SEL _cmd)
+{
+	if (((BOOL (*)(id, SEL))view_isFlipped_guest)(self, _cmd))
+		return YES;
+	return ((BOOL (*)(id, SEL))view_isFlipped_orig)(self, _cmd);
+}
+
+void xl_host_method_replaced(Class cls, SEL sel, IMP orig, IMP guest)
+{
+	if (cls == [NSView class] && sel == @selector(isFlipped)) {
+		view_isFlipped_orig = orig;
+		view_isFlipped_guest = guest;
+		method_setImplementation(class_getInstanceMethod(cls, sel), (IMP)xl_view_isFlipped);
+	}
 }
 
 void xl_appkit_hooks(void)

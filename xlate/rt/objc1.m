@@ -558,10 +558,13 @@ static void add_methods(Class cls, int meta, uint32_t list, int replace)
 		}
 		IMP fn = make_closure(imp, t, n);
 		Class target = meta ? object_getClass((id)cls) : cls;
+		IMP old = NULL;
 		if (replace)
-			class_replaceMethod(target, sel, fn, enc);
+			old = class_replaceMethod(target, sel, fn, enc);
 		else if (!class_addMethod(target, sel, fn, enc))
-			class_replaceMethod(target, sel, fn, enc);
+			old = class_replaceMethod(target, sel, fn, enc);
+		if (old && !xl_in_window((void *)old))
+			xl_host_method_replaced(target, sel, old, fn);
 	}
 }
 

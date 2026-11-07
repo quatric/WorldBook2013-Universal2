@@ -132,3 +132,6 @@ void xl_exc_init(void);
 uint32_t xl_data_symbol(const char *name);
 
 #endif
+
+// a guest category replaced a host method (appkit.m keeps the ones it needs)
+void xl_host_method_replaced(Class cls, SEL sel, IMP orig, IMP guest);
