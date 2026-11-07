@@ -551,8 +551,10 @@ static void call_ffi(XLCPU *c, XLBridge *b)
 	}
 	uint8_t rv[256] __attribute__((aligned(16)));
 	memset(rv, 0, 16);
-	if (xl_verbose > 4)
-		xl_log("ccall %s", b->name);
+	if (xl_verbose > 4) {
+		uint32_t *ga = (uint32_t *)GP(c->r[ESP] + 4);
+		xl_log("ccall %s %08x %08x %08x %08x", b->name, ga[0], ga[1], ga[2], ga[3]);
+	}
 	ffi_call(cif, FFI_FN(b->fn), rv, A.vals);
 	copy_out(&A);
 	set_ret(c, rt, rv, sret, b->objret);
@@ -921,18 +923,39 @@ static void msg_nil(XLCPU *c, int kind)
 }
 @end
 
-// Reps whose pixels the host allocated (decoded images): -bitmapData hands
-// out a copy in the window, kept with the rep and refreshed on every call
-// (readers such as texture uploads see the current pixels; guest writes to it
-// do not reach the rep). RGB without alpha is decoded into 32-bit pixels now;
+// host memory shared with the guest (xl_remap) while an object holds it
+@interface XLRemapOwner : NSObject {
+@public
+	uint32_t g;
+	size_t n;
+	const void *hp;     // the host buffer it shows
+	int kind;           // 0 data, 1 bitmap
+}
+@end
+@implementation XLRemapOwner
+- (void)dealloc
+{
+	extern size_t xl_live[2];
+	xl_live[kind] -= n;
+	xl_unmap(g, n);
+	[super dealloc];
+}
+@end
+
+// Reps whose pixels the host allocated (decoded images): -bitmapData hands out
+// the rep's own buffer mapped into the window, so guest writes (pixel edits,
+// channel copies between images) reach the rep. RGB without alpha is decoded
+// into 32-bit pixels now;
 // the 2013 AppKit packed it in 24 bits, which the guest's pixel loops assume,
-// so such reps are shown packed: bitsPerPixel, bytesPerRow and the copy agree.
+// so such reps are shown packed: bitsPerPixel, bytesPerRow and a copy (refreshed on
+// every call; guest writes to it do not reach the rep) agree.
 static int padded_rgb(NSBitmapImageRep *rep)
 {
 	return [rep samplesPerPixel] == 3 && [rep bitsPerPixel] == 32 && [rep bitsPerSample] == 8 && ![rep isPlanar]
 		&& !xl_in_window([rep bitmapData]);
 }
 
+size_t xl_live[2];
 static void *bitmap_copy(NSBitmapImageRep *rep, const void *hp)
 {
 	int pack = padded_rgb(rep);
@@ -940,6 +963,24 @@ static void *bitmap_copy(NSBitmapImageRep *rep, const void *hp)
 	NSInteger n = pack ? w * 3 * h : [rep bytesPerPlane];
 	if (n <= 0 || n > 0x10000000)
 		return NULL;
+	if (!pack && ![rep isPlanar]) {
+		static char shared_key;
+		XLRemapOwner *own = objc_getAssociatedObject(rep, &shared_key);
+		if (own && own->hp == hp && own->n == (size_t)n)
+			return GP(own->g);
+		uint32_t g = xl_remap(hp, (size_t)n);
+		if (g) {
+			own = [XLRemapOwner new];
+			own->g = g;
+			own->n = (size_t)n;
+			own->hp = hp;
+			own->kind = 1;
+			xl_live[1] += own->n;
+			objc_setAssociatedObject(rep, &shared_key, own, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+			[own release];
+			return GP(g);
+		}
+	}
 	XLGuestPlanes *gp = objc_getAssociatedObject(rep, &bitmap_copy);
 	if (!gp || gp->size != (uint32_t)n) {
 		gp = [[XLGuestPlanes new] autorelease];
@@ -1077,9 +1118,34 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 		*(long *)A.vals[2 + k] = gbpr;
 		*(long *)A.vals[3 + k] = gbpp;
 	}
+	// tracking rect and tool tip tags are pointer-sized: the guest holds handles
+	int tagret = m->sel == @selector(addTrackingRect:owner:userData:assumeInside:) ||
+		m->sel == @selector(addToolTipRect:owner:userData:);
+	if ((m->sel == @selector(removeTrackingRect:) || m->sel == @selector(removeToolTip:)) && m->n > 3) {
+		uint32_t t = *(uint32_t *)GP(a0 + 8);
+		*(long *)A.vals[2] = t ? (long)xl_p(t) : 0;
+	}
 	uint8_t rv[256] __attribute__((aligned(16)));
 	memset(rv, 0, 16);
 	NSException *exc = nil;
+	// windows may only be used on the main thread now (the 2013 frameworks keep a
+	// hidden window per thread): messages to them run there
+	static Class window_class;
+	if (!window_class)
+		window_class = NSClassFromString(@"NSWindow");
+	if (![NSThread isMainThread] && [self isKindOfClass:window_class]) {
+		__block NSException *mexc = nil;
+		uint8_t *rvp = rv;
+		void **vals = A.vals;
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			@try {
+				ffi_call(cif, FFI_FN(m->imp), rvp, vals);
+			} @catch (NSException *e) {
+				mexc = [e retain];
+			}
+		});
+		exc = mexc;
+	} else
 	@try {
 		ffi_call(cif, FFI_FN(m->imp), rv, A.vals);
 	} @catch (NSException *e) {
@@ -1113,6 +1179,8 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 	}
 	copy_out(&A);
 	set_ret(c, rt, rv, sret, 1);
+	if (tagret)
+		c->r[EAX] = *(long *)rv ? xl_h((void *)*(long *)rv) : 0;
 	if (logit)
 		for (int i = 3; i < m->n; i++)
 			if (m->t[i]->kind == 'P') {
@@ -1203,20 +1271,55 @@ static void spec_methodForSelector(XLCPU *c, MsgSig *m, id self, uint32_t a0)
 
 static char bytes_key;
 
-@interface XLRemapOwner : NSObject {
+
+// A short buffer (less than a page of the window) is a copy in the guest heap kept
+// with the object and synced both ways on every -bytes / -mutableBytes: what the
+// guest wrote into it since the last call reaches a mutable object's buffer, what
+// the host changed reaches the copy (the host wins when both did).
+@interface XLBytesCopy : NSObject {
 @public
 	uint32_t g;
 	size_t n;
-	const void *hp;     // the host buffer it shows
+	const void *hp;
+	uint8_t *snap;      // contents at the last sync
 }
 @end
-@implementation XLRemapOwner
+@implementation XLBytesCopy
 - (void)dealloc
 {
-	xl_unmap(g, n);
+	xl_free(g);
+	free(snap);
 	[super dealloc];
 }
 @end
+
+static uint32_t bytes_copy(id self, const void *p, NSUInteger len)
+{
+	static char copy_key;
+	XLBytesCopy *cp = objc_getAssociatedObject(self, &copy_key);
+	if (cp && cp->hp == p && cp->n == len) {
+		uint8_t *gb = GP(cp->g);
+		int host = memcmp(p, cp->snap, len) != 0, guest = memcmp(gb, cp->snap, len) != 0;
+		if (host) {
+			memcpy(gb, p, len);
+			memcpy(cp->snap, p, len);
+		} else if (guest && [self isKindOfClass:[NSMutableData class]]) {
+			memcpy((void *)p, gb, len);
+			memcpy(cp->snap, gb, len);
+		}
+		return cp->g;
+	}
+	cp = [XLBytesCopy new];
+	cp->g = xl_malloc((uint32_t)len + 1);
+	cp->n = len;
+	cp->hp = p;
+	cp->snap = malloc(len + 1);
+	memcpy(GP(cp->g), p, len);
+	memcpy(cp->snap, p, len);
+	objc_setAssociatedObject(self, &copy_key, cp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+	[cp release];
+	return cp->g;
+}
 
 static void spec_bytes(XLCPU *c, MsgSig *m, id self, uint32_t a0)
 {
@@ -1224,27 +1327,30 @@ static void spec_bytes(XLCPU *c, MsgSig *m, id self, uint32_t a0)
 	const void *p = ((const void *(*)(id, SEL))m->imp)(self, m->sel);
 	NSUInteger len = [(NSData *)self length];
 	uint32_t g = 0;
-	if (p) {
+	if (p && len < vm_page_size)
+		g = bytes_copy(self, p, len);
+	else if (p) {
+		// longer buffers are shared with the guest
 		XLRemapOwner *own = objc_getAssociatedObject(self, &bytes_key);
 		if (own && own->n == len && own->hp == p)
 			g = own->g;     // the host buffer did not move
-		// a mutable object's buffer is written through: always share it; a short
-		// immutable one is copied (remapping takes at least a page of the window)
-		BOOL share = len >= 256 || [self isKindOfClass:[NSMutableData class]];
 		if (!g) {
-			if (!share) {
-				g = xl_malloc((uint32_t)len + 1);
-				memcpy(GP(g), p, len);
+			g = xl_remap(p, len);
+			if (!g) {
+				// the window's shared area is full: a synced copy in the heap instead
+				static int told;
+				if (!told++)
+					xl_log("bytes: shared area full (%zu MB of data, %zu MB of bitmaps); copying instead",
+						xl_live[0] >> 20, xl_live[1] >> 20);
+				g = bytes_copy(self, p, len);
 			} else {
-				g = xl_remap(p, len);
-				if (g) {
-					own = [XLRemapOwner new];
-					own->g = g;
-					own->n = len;
-					own->hp = p;
-					objc_setAssociatedObject(self, &bytes_key, own, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-					[own release];
-				}
+				own = [XLRemapOwner new];
+				own->g = g;
+				own->n = len;
+				own->hp = p;
+				xl_live[0] += own->n;
+				objc_setAssociatedObject(self, &bytes_key, own, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+				[own release];
 			}
 		}
 	}

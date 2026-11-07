@@ -360,11 +360,17 @@ uint32_t xl_remap(const void *p, size_t n)
 		len = vm_page_size;
 	os_unfair_lock_lock(&remap_lock);
 	uint32_t g = 0;
+	// first fit in the address-ordered free list, splitting a larger span
 	for (Span **pp = &remap_free, *s; (s = *pp); pp = &s->next)
-		if (s->size == len) {
+		if (s->size >= len) {
 			g = s->addr;
-			*pp = s->next;
-			free(s);
+			if (s->size == len) {
+				*pp = s->next;
+				free(s);
+			} else {
+				s->addr += (uint32_t)len;
+				s->size -= (uint32_t)len;
+			}
 			break;
 		}
 	if (!g) {
@@ -394,12 +400,41 @@ void xl_unmap(uint32_t g, size_t n)
 	if (!len)
 		len = vm_page_size;
 	mmap(XG + base, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED | MAP_NORESERVE, -1, 0);
-	Span *s = malloc(sizeof *s);
-	s->addr = base;
-	s->size = (uint32_t)len;
+	// back into the address-ordered free list, merged with its neighbours;
+	// a span ending at the top lowers the top instead
 	os_unfair_lock_lock(&remap_lock);
-	s->next = remap_free;
-	remap_free = s;
+	Span **pp = &remap_free, *prev = NULL;
+	while (*pp && (*pp)->addr < base) {
+		prev = *pp;
+		pp = &(*pp)->next;
+	}
+	Span *next = *pp;
+	if (prev && prev->addr + prev->size == base) {
+		prev->size += (uint32_t)len;
+		if (next && prev->addr + prev->size == next->addr) {
+			prev->size += next->size;
+			prev->next = next->next;
+			free(next);
+		}
+	} else if (next && base + len == next->addr) {
+		next->addr = base;
+		next->size += (uint32_t)len;
+	} else {
+		Span *s = malloc(sizeof *s);
+		s->addr = base;
+		s->size = (uint32_t)len;
+		s->next = next;
+		*pp = s;
+	}
+	// the last span touching the top is given back to the bump area
+	Span **lp = &remap_free;
+	while (*lp && (*lp)->next)
+		lp = &(*lp)->next;
+	if (*lp && (*lp)->addr + (*lp)->size == remap_top) {
+		remap_top = (*lp)->addr;
+		free(*lp);
+		*lp = NULL;
+	}
 	os_unfair_lock_unlock(&remap_lock);
 }
 

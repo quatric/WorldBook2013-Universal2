@@ -320,6 +320,49 @@ static void Run(NSString *aLine)
 				}));
 			}
 		}
+	} else if ([cmd isEqualToString:@"main"]) {
+		// the last clicked (or first) window answers as main and key from here on, as if
+		// the app were active (it is never activated, so AppKit will not make it either)
+		static NSWindow *sMain;
+		sMain = [sLastHit window] ?: Windows().firstObject;
+		static BOOL done;
+		if (!done) {
+			done = YES;
+			for (NSString *sn in @[@"isMainWindow", @"isKeyWindow"]) {
+				SEL sel = NSSelectorFromString(sn);
+				Method m = class_getInstanceMethod([NSWindow class], sel);
+				IMP o = method_getImplementation(m);
+				method_setImplementation(m, imp_implementationWithBlock(^BOOL(NSWindow *w) {
+					return w == sMain || ((BOOL (*)(id, SEL))o)(w, sel);
+				}));
+			}
+		}
+		void (*flush)(void) = dlsym(RTLD_DEFAULT, "xl_msgcache_flush");   // the runtime caches IMPs
+		if (flush)
+			flush();
+		[sMain makeFirstResponder:[sMain firstResponder]];
+		[[sMain toolbar] validateVisibleItems];
+		Log(@"main %@", [sMain title]);
+	} else if ([cmd isEqualToString:@"boxes"]) {
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		while ([todo count]) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[NSBox class]]) {
+				NSBox *b = (NSBox *)v;
+				Log(@"box %p title '%@' position %ld type %ld border %ld titleRect %@", b, [b title], (long)[b titlePosition],
+					(long)[b boxType], (long)[b borderType], NSStringFromRect([b titleRect]));
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+	} else if ([cmd isEqualToString:@"toolbar"]) {
+		// each window's toolbar items: enabled, action, target
+		for (NSWindow *w in Windows())
+			for (NSToolbarItem *it in [[w toolbar] items])
+				Log(@"toolbar %@ '%@' enabled %d action %@ target %@ view %@ first responder %@ key %d", [it itemIdentifier], [it label],
+					[it isEnabled], NSStringFromSelector([it action]), [it target], [[it view] class], [w firstResponder], [w isKeyWindow]);
 	} else if ([cmd isEqualToString:@"ftrace"]) {
 		// logs every translated function entered from here on (1) or stops (0)
 		int *v = dlsym(RTLD_DEFAULT, "xl_trace_on");

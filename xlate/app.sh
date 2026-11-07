@@ -62,7 +62,7 @@ $CC -o "$OUT/$EXE" build/rt/*.o $OUT/x/*/*.o -lffi \
 	-framework AppKit -framework Foundation -framework Carbon -framework OpenGL -framework WebKit \
 	-framework AudioToolbox -framework AVFoundation -framework AudioUnit -framework CoreAudio -framework Security \
 	-framework SystemConfiguration -framework IOKit -framework ApplicationServices -framework Accelerate \
-	-framework CoreServices -framework QuartzCore -lsqlite3 -lz \
+	-framework CoreServices -framework QuartzCore -framework ImageIO -lsqlite3 -lz \
 	-Wl,-w
 
 # the bundle: the original's resources around the translated executable

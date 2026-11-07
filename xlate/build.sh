@@ -29,6 +29,6 @@ $CC -o build/WorldBook build/rt/*.o build/x/*/*.o -lffi \
 	-framework AppKit -framework Foundation -framework Carbon -framework OpenGL -framework WebKit \
 	-framework AudioToolbox -framework AVFoundation -framework AudioUnit -framework CoreAudio -framework Security \
 	-framework SystemConfiguration -framework IOKit -framework ApplicationServices -framework Accelerate \
-	-framework CoreServices -framework QuartzCore -lsqlite3 -lz \
+	-framework CoreServices -framework QuartzCore -framework ImageIO -lsqlite3 -lz \
 	-Wl,-w
 echo built build/WorldBook

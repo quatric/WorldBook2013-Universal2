@@ -1134,22 +1134,8 @@ void xl_objc_init(void)
 			for (uint32_t o = 0; o + 20 <= sec->size; o += 20)
 				protocol_for(sec->addr + *im->slide + o);
 	}
-	for (int i = 0; i < ngclasses; i++)
-		build_class(&gclasses[i]);
-	for (int i = 0; i < ncats; i++) {
-		uint32_t ca = cats[i].addr;
-		const char *cn = GP(*(uint32_t *)GP(ca + 4));
-		GClass *g = gclass_named(cn);
-		Class cls = g ? g->host : objc_getClass(cn);
-		if (!cls) {
-			xl_log("category %s on missing class %s", (char *)GP(*(uint32_t *)GP(ca)), cn);
-			continue;
-		}
-		add_methods(cls, 0, *(uint32_t *)GP(ca + 8), 1);
-		add_methods(cls, 1, *(uint32_t *)GP(ca + 12), 1);
-		add_protocols(cls, *(uint32_t *)GP(ca + 16));
-	}
-	// class references
+	// class references, before any guest code can run: building a class looks up
+	// methods, which sends +initialize
 	for (XLImage *im = xl_images; im; im = im->next) {
 		const XLSection *sec = section(im, "__OBJC", "__cls_refs");
 		if (!sec)
@@ -1168,7 +1154,24 @@ void xl_objc_init(void)
 					c = native_class(cn);
 				*slot = xl_hobj((id)c);
 			}
+			if (xl_verbose > 1)
+				xl_log("cls_ref %s %08x -> %08x", cn, sec->addr + *im->slide + o, *slot);
 		}
+	}
+	for (int i = 0; i < ngclasses; i++)
+		build_class(&gclasses[i]);
+	for (int i = 0; i < ncats; i++) {
+		uint32_t ca = cats[i].addr;
+		const char *cn = GP(*(uint32_t *)GP(ca + 4));
+		GClass *g = gclass_named(cn);
+		Class cls = g ? g->host : objc_getClass(cn);
+		if (!cls) {
+			xl_log("category %s on missing class %s", (char *)GP(*(uint32_t *)GP(ca)), cn);
+			continue;
+		}
+		add_methods(cls, 0, *(uint32_t *)GP(ca + 8), 1);
+		add_methods(cls, 1, *(uint32_t *)GP(ca + 12), 1);
+		add_protocols(cls, *(uint32_t *)GP(ca + 16));
 	}
 	// +load, classes before categories
 	SEL load = @selector(load);

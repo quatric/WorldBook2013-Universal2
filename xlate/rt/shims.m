@@ -885,13 +885,27 @@ static void sh_GetComponentInfo(XLCPU *c)
 	xl_ret(c, (uint16_t)e);
 }
 
+uint32_t xl_gi_open(uint32_t subtype);
+int xl_gi_close(uint32_t h);
+
 static void sh_OpenDefaultComponent(XLCPU *c)
 {
+	if (A(0) == 'grip') {   // graphics importers are emulated (qtimport.m)
+		xl_ret(c, xl_gi_open(A(1)));
+		return;
+	}
 	ComponentInstance r = OpenDefaultComponent((OSType)A(0), (OSType)A(1));
 	xl_ret(c, r ? xl_h(r) : 0);
 }
 
-static void sh_CloseComponent(XLCPU *c) { xl_ret(c, (uint16_t)CloseComponent((ComponentInstance)xl_p(A(0)))); }
+static void sh_CloseComponent(XLCPU *c)
+{
+	if (xl_gi_close(A(0))) {
+		xl_ret(c, 0);
+		return;
+	}
+	xl_ret(c, (uint16_t)CloseComponent((ComponentInstance)xl_p(A(0))));
+}
 
 // maptable.m
 void xl_sh_NSCreateMapTable(XLCPU *c);
@@ -1003,6 +1017,13 @@ XLShim xl_find_shim(const char *name)
 	for (const ShimEnt *e = shims; e->name; e++)
 		if (!strcmp(e->name, name))
 			return e->fn;
+	extern XLShim xl_find_iostream_shim(const char *name);
+	extern XLShim xl_find_qt_shim(const char *name);
+	XLShim f = xl_find_iostream_shim(name);
+	if (!f)
+		f = xl_find_qt_shim(name);
+	if (f)
+		return f;
 	extern XLShim xl_find_media_shim(const char *name);
 	return xl_find_media_shim(name);
 }
