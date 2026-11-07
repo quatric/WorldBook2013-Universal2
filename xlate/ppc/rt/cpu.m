@@ -138,10 +138,57 @@ void ppc_call(PPC *c, uint32_t code)
 	const PPCFunc *f = find_func(code);
 	if (!f) {
 		ppc_log("call to %08x: no translated function there (from %s, lr %08x)", code, ppc_func_name(c->lr - 4), c->lr);
+		ppc_log("  r3 %08x r12 %08x; *r3 %08x", c->r[3], c->r[12], c->r[3] && c->r[3] < 0x7f000000 ? LD32(c->r[3]) : 0);
+		if (c->r[3] && c->r[3] < 0x7f000000) {
+			uint32_t vt = LD32(c->r[3]);
+			if (vt && vt < 0x7f000000)
+				for (int i = 0; i < 16; i++)
+					ppc_log("  vt+%d: %08x", 4 * i, LD32(vt + 4 * i));
+		}
 		ppc_backtrace(c);
 		abort();
 	}
 	f->fn(c);
+}
+
+PPCResume *ppc_resume_top;
+
+static uint32_t containing_func(uint32_t addr)
+{
+	size_t lo = 0, hi = ppc_nfuncs;
+	while (lo < hi) {
+		size_t m = (lo + hi) / 2;
+		if (ppc_funcs[m].addr <= addr)
+			lo = m + 1;
+		else
+			hi = m;
+	}
+	return lo ? ppc_funcs[lo - 1].addr : 0;
+}
+
+void ppc_resume(PPC *c, uint32_t pc)
+{
+	// the exception runtime restored the catching frame's registers and stack
+	// pointer and "returns" to a catch block: find that frame's host function
+	uint32_t fn = containing_func(pc), back = LD32(c->r[1]);
+	for (PPCResume *r = ppc_resume_top; r; r = r->prev)
+		if (r->func == fn && r->sp == back) {
+			if (ppc_verbose >= 2)
+				ppc_log("throw: resume at %08x in %s", pc, ppc_func_name(pc));
+			ppc_resume_top = r;
+			c->resume_pc = pc;
+			_longjmp(r->jb, 1);
+		}
+	ppc_log("throw: no live frame of %s (sp %08x) to resume at %08x", ppc_func_name(pc), back, pc);
+	ppc_backtrace(c);
+	abort();
+}
+
+void ppc_bad_resume(PPC *c, uint32_t pc)
+{
+	ppc_log("throw: %08x is not a catch block of %s", pc, ppc_func_name(pc));
+	ppc_backtrace(c);
+	abort();
 }
 
 void ppc_trace_fn(PPC *c, uint32_t addr)

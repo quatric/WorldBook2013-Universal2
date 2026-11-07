@@ -12,7 +12,29 @@ typedef struct PPC {
 	uint32_t r[32];
 	FPR f[32];
 	uint32_t cr, lr, ctr, ca, so, ov, xer_bc, fpscr;
+	uint32_t resume_pc;     // a catch block to enter (set by ppc_resume)
 } PPC;
+
+// C++ exceptions: functions with catch blocks keep a host frame a throw can
+// longjmp back to. sp is the guest stack pointer on entry, which the catching
+// frame's back chain holds.
+#include <setjmp.h>
+typedef struct PPCResume {
+	struct PPCResume *prev;
+	uint32_t func, sp;
+	jmp_buf jb;
+} PPCResume;
+extern PPCResume *ppc_resume_top;
+static inline void ppc_resume_push(PPCResume *r, uint32_t func, uint32_t sp)
+{
+	r->prev = ppc_resume_top;
+	r->func = func;
+	r->sp = sp;
+	ppc_resume_top = r;
+}
+static inline void ppc_resume_pop(PPCResume *r) { ppc_resume_top = r->prev; }
+void ppc_resume(PPC *c, uint32_t pc) __attribute__((noreturn));
+void ppc_bad_resume(PPC *c, uint32_t pc) __attribute__((noreturn));
 
 typedef void (*PPCFn)(PPC *);
 typedef struct { uint32_t addr; PPCFn fn; const char *name; } PPCFunc;

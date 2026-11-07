@@ -566,7 +566,7 @@ static void sh_AHGotoPage(PPC *c)
 
 // ---- low memory and the rest -------------------------------------------------------------------------
 
-static int hilite_mode = 0x80;
+int hilite_mode = 0x80;   // the hiliteBit (7) cleared: the next invert highlights
 static void sh_LMGetSysFontFam(PPC *c) { RET(0); }
 static void sh_LMGetSysFontSize(PPC *c) { RET(12); }
 static void sh_LMGetHiliteMode(PPC *c) { RET(hilite_mode); }

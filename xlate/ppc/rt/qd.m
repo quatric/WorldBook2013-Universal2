@@ -1059,7 +1059,15 @@ static void do_shape(Port *p, Rgn *g, int verb, uint32_t pat)
 	case V_FRAME: frame_shape(p, g); break;
 	case V_PAINT: qd_fill(p, g, qd_pen(p)); break;
 	case V_ERASE: qd_fill(p, g, qd_back(p)); break;
-	case V_INVERT: qd_fill(p, g, (Paint){pat_black, p->fg, p->bg, 10}); break;
+	case V_INVERT: {
+		// with the hilite bit cleared (LMSetHiliteMode), an invert swaps the background
+		// and the highlight color, once
+		extern int hilite_mode;
+		int hil = !(hilite_mode & 0x80);
+		hilite_mode |= 0x80;
+		qd_fill(p, g, (Paint){pat_black, p->fg, p->bg, hil ? 50 : 10});
+		break;
+	}
 	case V_FILL: {
 		uint8_t pt[8];
 		memcpy(pt, G(pat), 8);

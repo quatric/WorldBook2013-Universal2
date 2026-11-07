@@ -133,6 +133,17 @@ static void run(NavD *d)
 	win_flush_all();
 	d->paths = nil;
 	d->action = actCancel;
+	// scripted test runs: PPC_NAV_FILE answers open and save dialogs with that path
+	const char *auto_file = getenv("PPC_SCRIPT") ? getenv("PPC_NAV_FILE") : NULL;
+	if (auto_file && d->kind != 2) {
+		NSString *p = @(auto_file);
+		d->paths = @[p];
+		d->dir = p.stringByDeletingLastPathComponent;
+		d->name = p.lastPathComponent;
+		d->action = d->kind == 0 ? actOpen : actSaveAs;
+		ppc_log("nav: answered with %s", auto_file);
+		return;
+	}
 	if (d->kind == 0) {
 		NSOpenPanel *p = [NSOpenPanel openPanel];
 		p.canChooseFiles = YES;

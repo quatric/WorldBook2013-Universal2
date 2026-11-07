@@ -49,4 +49,8 @@ python3 -I xlate/ppc/mkinfo.py "$SRC" "$EXE" "$NAME" "$APP"
 rm -rf "$APP/Contents/Resources/.World Book.wz"
 cp -R "game/Wizards/.World Book.wz" "$APP/Contents/Resources/.World Book.wz"
 ln -sfh "../../../2013 World Book.app" "$APP/Contents/Resources/.World Book.ln"
+# the Timeline Wizard also reads two of World Book's own tables from that folder
+for f in DROPWORD.LST TLINETBL.TXT; do
+	cp "game/2013 World Book/2013 World Book.app/Contents/Resources/$f" "$APP/Contents/Resources/.World Book.wz/Contents/MacOS/WB Data/$f"
+done
 echo "$APP"

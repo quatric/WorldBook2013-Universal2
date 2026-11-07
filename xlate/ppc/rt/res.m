@@ -22,6 +22,7 @@ typedef struct RFile {
 	int16_t ref;
 	char path[1024];
 	int writable, dirty;
+	int datafork;          // resources in the data fork (FSOpenResourceFile with the data fork's name)
 	Res **res;
 	int n, cap;
 	uint16_t attrs;
@@ -253,7 +254,7 @@ static int write_file(RFile *f)
 	[map appendData:rlist];
 	[map appendData:names];
 	[out appendData:map];
-	NSString *rp = [@(f->path) stringByAppendingString:@"/..namedfork/rsrc"];
+	NSString *rp = f->datafork ? @(f->path) : [@(f->path) stringByAppendingString:@"/..namedfork/rsrc"];
 	if (![out writeToFile:rp atomically:NO]) {
 		ppc_log("cannot write the resource fork of %s", f->path);
 		return -34;
@@ -264,7 +265,7 @@ static int write_file(RFile *f)
 
 // ---- opening ------------------------------------------------------------------------------------
 
-static RFile *open_path(const char *path, int perm, int16_t *err)
+static RFile *open_path2(const char *path, int perm, int16_t *err, int datafork)
 {
 	// already open?
 	for (RFile *f = chain; f; f = f->next)
@@ -272,7 +273,7 @@ static RFile *open_path(const char *path, int perm, int16_t *err)
 			*err = 0;
 			return f;
 		}
-	NSString *rp = [@(path) stringByAppendingString:@"/..namedfork/rsrc"];
+	NSString *rp = datafork ? @(path) : [@(path) stringByAppendingString:@"/..namedfork/rsrc"];
 	NSData *d = [NSData dataWithContentsOfFile:rp];
 	struct stat st;
 	if (stat(path, &st) != 0) {
@@ -286,6 +287,7 @@ static RFile *open_path(const char *path, int perm, int16_t *err)
 	RFile *f = calloc(1, sizeof *f);
 	snprintf(f->path, sizeof f->path, "%s", path);
 	f->writable = perm != 1;   // fsRdPerm
+	f->datafork = datafork;
 	if (parse_fork(f, d.bytes, d.length) != 0) {
 		free(f);
 		*err = -199;   // mapReadErr
@@ -297,6 +299,11 @@ static RFile *open_path(const char *path, int perm, int16_t *err)
 	cur = f;
 	*err = 0;
 	return f;
+}
+
+static RFile *open_path(const char *path, int perm, int16_t *err)
+{
+	return open_path2(path, perm, err, 0);
 }
 
 static void close_file(RFile *f)
@@ -597,10 +604,11 @@ static void sh_FSOpenResourceFile(PPC *c)
 	char p[1024];
 	const char *path = fsref_path(A(0), p, sizeof p);
 	int16_t err = 0;
-	RFile *f = path ? open_path(path, (int8_t)A(3), &err) : NULL;
+	RFile *f = path ? open_path2(path, (int8_t)A(3), &err, A(1) == 0) : NULL;
 	if (f)
 		ST16(A(4), f->ref);
-	RET((int32_t)(f ? 0 : (err ? err : -43)));
+	res_err = f ? 0 : (err ? err : -43);
+	RET((int32_t)res_err);
 }
 static void sh_FSpCreateResFile(PPC *c)
 {

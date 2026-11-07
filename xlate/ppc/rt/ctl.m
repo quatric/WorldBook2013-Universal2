@@ -1483,6 +1483,15 @@ static void sh_GetControlData(PPC *c)
 		n = 4;
 		break;
 	}
+	case 'font': {   // ControlFontStyleRec
+		uint16_t v[12] = {(uint16_t)k->fs_flags, (uint16_t)k->fs_font, (uint16_t)k->fs_size, (uint16_t)k->fs_style, 0,
+			(uint16_t)k->fs_just, k->fs_fore.r, k->fs_fore.g, k->fs_fore.b, k->fs_back.r, k->fs_back.g, k->fs_back.b};
+		for (int i = 0; i < 12; i++)
+			v[i] = __builtin_bswap16(v[i]);
+		memcpy(tmp, v, 24);
+		n = 24;
+		break;
+	}
 	case 'cont': {
 		uint16_t t = __builtin_bswap16((uint16_t)k->content);
 		memcpy(tmp, &t, 2);

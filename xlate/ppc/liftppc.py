@@ -177,7 +177,13 @@ class Func:
         self.insns = {}
         self.labels = set()
         self.bctr_targets = {}
-        work = [start]
+        self.resume = []          # catch blocks: entered from the exception unwinder
+        self.starts, self.jt = starts, jt_targets
+        self.explore(start)
+
+    def explore(self, seed):
+        img, start, starts, jt_targets = self.img, self.start, self.starts, self.jt
+        work = [seed]
         while work:
             a = work.pop()
             while True:
@@ -211,6 +217,24 @@ class Func:
                     ins.kind = ins.kind if ins.kind != 'op' else 'op'
                     self.insns[a - 4].fallthrough = 'into'
                     break
+
+    def add_catch_blocks(self):
+        """Code in this function that no branch reaches: the catch blocks the
+        exception tables name. Each becomes a place a throw can resume."""
+        if not self.end:
+            return
+        a = self.start
+        while a < self.end:
+            if a not in self.insns and self.img.word(a) != 0 and classify(self.img, a).kind != 'trap':
+                self.resume.append(a)
+                self.labels.add(a)
+                self.explore(a)
+            a += 4
+
+    def switches_stack(self):
+        # lwz r1, d(rX) with X other than r1: the catch transfer (or longjmp)
+        return any(i.op == 32 and (i.w >> 21) & 31 == 1 and (i.w >> 16) & 31 not in (0, 1)
+                   for i in self.insns.values())
 
     def is_tail(self, t, starts):
         if t == self.start:
@@ -295,6 +319,11 @@ class Emitter:
             pre, cond = self.branch_cond(rd, ra)
             if rc:
                 return '%sif (%s) { uint32_t t = c->lr; c->lr = 0x%08x; ppc_call(c, t); }' % (pre, cond, nxt)
+            if f.stack_switch:
+                ret = 'ppc_resume(c, c->lr); return;'
+                if cond == '1':
+                    return pre + ret
+                return '%sif (%s) { %s }' % (pre, cond, ret)
             if cond == '1':
                 return pre + 'return;'
             return '%sif (%s) return;' % (pre, cond)
@@ -620,7 +649,19 @@ class Emitter:
 
     def function(self, f, out):
         name = self.img.names.get(f.start, '')
-        out.append('// %s\nvoid %s(PPC *c)\n{\n\tPTRACE(0x%08x);\n' % (name, self.fname(f.start), f.start))
+        if f.resume:
+            # a function with catch blocks: a host frame a throw can longjmp back to
+            fn = self.fname(f.start)
+            out.append('static void B%s(PPC *c);\n// %s\nvoid %s(PPC *c)\n{\n'
+                       '\tPPCResume rf;\n\tppc_resume_push(&rf, 0x%08x, c->r[1]);\n'
+                       '\t_setjmp(rf.jb);\n\tB%s(c);\n\tppc_resume_pop(&rf);\n}\n'
+                       'static void B%s(PPC *c)\n{\n\tPTRACE(0x%08x);\n' % (fn[1:], name, fn, f.start, fn[1:], fn[1:], f.start))
+            out.append('\tif (c->resume_pc) {\n\t\tuint32_t t = c->resume_pc;\n\t\tc->resume_pc = 0;\n\t\tswitch (t) {\n')
+            for r in f.resume:
+                out.append('\t\tcase 0x%08x: goto L_%08x;\n' % (r, r))
+            out.append('\t\t}\n\t\tppc_bad_resume(c, t);\n\t}\n')
+        else:
+            out.append('// %s\nvoid %s(PPC *c)\n{\n\tPTRACE(0x%08x);\n' % (name, self.fname(f.start), f.start))
         addrs = sorted(f.insns)
         prev = None
         for a in addrs:
@@ -641,6 +682,26 @@ class Emitter:
         if last.fallthrough is True:
             out.append('\t%s\n' % self.tail_to(addrs[-1] + 4))
         out.append('}\n\n')
+
+
+def exception_functions(img, starts):
+    """CodeWarrior's exception index ends the code section: 12-byte entries
+    {function offset, length (bit 31: no table), table offset}. Returns the
+    functions with a full table, the ones that can catch."""
+    a = img.code_end - 12
+    ents = []
+    prev = None
+    while a >= CODE_BASE:
+        off, ln = img.word(a), img.word(a + 4)
+        f = CODE_BASE + off
+        if f not in starts or (prev is not None and f >= prev) or (ln & 0x7fffffff) == 0:
+            break
+        ents.append((f, ln))
+        prev = f
+        a -= 12
+    if len(ents) < 4:
+        return []
+    return [f for f, ln in ents if not ln & 0x80000000]
 
 
 def main():
@@ -671,6 +732,13 @@ def main():
     order = sorted(starts)
     for i, s in enumerate(order):
         funcs[s] = Func(img, s, starts, jt, order[i + 1] if i + 1 < len(order) else img.code_end)
+    for f in funcs.values():
+        f.stack_switch = f.switches_stack()
+    nres = 0
+    for s in exception_functions(img, starts):
+        if s in funcs:
+            funcs[s].add_catch_blocks()
+            nres += len(funcs[s].resume)
     em = Emitter(img, funcs)
     # import glue names
     for s, f in funcs.items():
@@ -719,8 +787,9 @@ def main():
         '\t.globl _ppc_data_bin\n\t.p2align 4\n_ppc_data_bin:\n\t.incbin "%s"\n' % (
             os.path.abspath(os.path.join(outdir, 'code.bin')), os.path.abspath(os.path.join(outdir, 'data.bin'))))
     nb = sum(len(f.bctr_targets) for f in funcs.values())
-    print('%d functions (%d named), %d imports, %d bctr sites with jump tables' % (
-        len(funcs), len(img.names), len(img.imports), sum(1 for f in funcs.values() for v in f.bctr_targets.values() if v)))
+    print('%d functions (%d named), %d imports, %d bctr sites with jump tables, %d catch blocks in %d functions' % (
+        len(funcs), len(img.names), len(img.imports), sum(1 for f in funcs.values() for v in f.bctr_targets.values() if v),
+        nres, sum(1 for f in funcs.values() if f.resume)))
     unimpl = {}
     for f in funcs.values():
         for ins in f.insns.values():

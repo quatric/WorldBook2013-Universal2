@@ -76,7 +76,8 @@ static NSString *resolve(int16_t vref, int32_t dir, const uint8_t *name, size_t 
 		const uint8_t *e = memchr(name, ':', n);
 		NSString *vol = host_name(name, e - name);
 		NSString *root = @"/";
-		if (![vol isEqualToString:@"Macintosh HD"] && ![vol isEqualToString:[NSFileManager.defaultManager displayNameAtPath:@"/"]])
+		if (![vol isEqualToString:@"Macintosh HD"] && ![vol isEqualToString:@":"] &&
+			![vol isEqualToString:[NSFileManager.defaultManager displayNameAtPath:@"/"]])
 			root = [@"/Volumes" stringByAppendingPathComponent:vol];
 		base = root;
 		i = e - name + 1;
@@ -202,6 +203,9 @@ static void sh_FSMakeFSSpec(PPC *c)
 	// FSMakeFSSpec(vRefNum, dirID, fileName, FSSpec *)
 	uint32_t nm = A(2);
 	NSString *p = resolve((int16_t)A(0), (int32_t)A(1), nm ? G(nm + 1) : NULL, nm ? LD8(nm) : 0);
+	if (ppc_verbose >= 3)
+		ppc_log("FSMakeFSSpec %d %d '%.*s' -> %s", (int16_t)A(0), (int32_t)A(1), nm ? LD8(nm) : 0, nm ? (char *)G(nm + 1) : "",
+			p ? p.fileSystemRepresentation : "(none)");
 	if (!p) {
 		RET(-120);   // dirNFErr
 		return;
@@ -591,11 +595,11 @@ static void sh_PBGetCatInfoSync(PPC *c)
 		}
 		path = [d stringByAppendingPathComponent:l[index - 1]];
 		if (namep)
-			ns_pstr(mac_name([path lastPathComponent]), namep);
+			ns_pstr([path isEqualToString:@"/"] ? @"Macintosh HD" : mac_name([path lastPathComponent]), namep);
 	} else if (index < 0) {
 		path = resolve(vref, dir, NULL, 0);
 		if (namep && path)
-			ns_pstr(mac_name([path lastPathComponent]), namep);
+			ns_pstr([path isEqualToString:@"/"] ? @"Macintosh HD" : mac_name([path lastPathComponent]), namep);
 	} else {
 		path = resolve(vref, dir, namep ? G(namep + 1) : NULL, namep ? LD8(namep) : 0);
 	}
