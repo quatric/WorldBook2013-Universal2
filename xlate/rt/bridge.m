@@ -921,12 +921,23 @@ static void msg_nil(XLCPU *c, int kind)
 }
 @end
 
-// -bitmapData of a rep whose pixels the host allocated: a copy in the window,
-// kept with the rep and refreshed on every call (readers such as texture
-// uploads see the current pixels; guest writes to it do not reach the rep)
+// Reps whose pixels the host allocated (decoded images): -bitmapData hands
+// out a copy in the window, kept with the rep and refreshed on every call
+// (readers such as texture uploads see the current pixels; guest writes to it
+// do not reach the rep). RGB without alpha is decoded into 32-bit pixels now;
+// the 2013 AppKit packed it in 24 bits, which the guest's pixel loops assume,
+// so such reps are shown packed: bitsPerPixel, bytesPerRow and the copy agree.
+static int padded_rgb(NSBitmapImageRep *rep)
+{
+	return [rep samplesPerPixel] == 3 && [rep bitsPerPixel] == 32 && [rep bitsPerSample] == 8 && ![rep isPlanar]
+		&& !xl_in_window([rep bitmapData]);
+}
+
 static void *bitmap_copy(NSBitmapImageRep *rep, const void *hp)
 {
-	NSInteger n = [rep bytesPerPlane];
+	int pack = padded_rgb(rep);
+	NSInteger w = [rep pixelsWide], h = [rep pixelsHigh], sbpr = [rep bytesPerRow];
+	NSInteger n = pack ? w * 3 * h : [rep bytesPerPlane];
 	if (n <= 0 || n > 0x10000000)
 		return NULL;
 	XLGuestPlanes *gp = objc_getAssociatedObject(rep, &bitmap_copy);
@@ -936,8 +947,22 @@ static void *bitmap_copy(NSBitmapImageRep *rep, const void *hp)
 		gp->size = (uint32_t)n;
 		objc_setAssociatedObject(rep, &bitmap_copy, gp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 	}
-	memcpy(GP(gp->buf[0]), hp, (size_t)n);
-	return GP(gp->buf[0]);
+	uint8_t *d = GP(gp->buf[0]);
+	if (pack) {
+		const uint8_t *src = hp;
+		int skip_first = ([rep bitmapFormat] & NSBitmapFormatAlphaFirst) != 0;
+		for (NSInteger y = 0; y < h; y++) {
+			const uint8_t *r = src + y * sbpr + skip_first;
+			uint8_t *o = d + y * w * 3;
+			for (NSInteger x = 0; x < w; x++, r += 4, o += 3) {
+				o[0] = r[0];
+				o[1] = r[1];
+				o[2] = r[2];
+			}
+		}
+	} else
+		memcpy(d, hp, (size_t)n);
+	return d;
 }
 
 static XLGuestPlanes *guest_planes(MsgSig *m, uint32_t a0, unsigned char **hp, long *obpr, long *obpp)
@@ -1076,6 +1101,12 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 	if (rt->kind == '*' && *(void **)rv && !xl_in_window(*(void **)rv) && m->sel == @selector(bitmapData)
 		&& [self isKindOfClass:[NSBitmapImageRep class]])
 		*(void **)rv = bitmap_copy(self, *(void **)rv);
+	else if ((m->sel == @selector(bitsPerPixel) || m->sel == @selector(bytesPerRow) || m->sel == @selector(bytesPerPlane))
+		&& [self isKindOfClass:[NSBitmapImageRep class]] && padded_rgb(self)) {
+		NSInteger w = [self pixelsWide];
+		*(NSInteger *)rv = m->sel == @selector(bitsPerPixel) ? 24 : m->sel == @selector(bytesPerRow) ? w * 3
+			: w * 3 * [self pixelsHigh];
+	}
 	copy_out(&A);
 	set_ret(c, rt, rv, sret, 1);
 	if (logit)
