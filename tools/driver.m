@@ -240,7 +240,7 @@ static void Run(NSString *aLine)
 			Log(@"wshot: no window");
 	} else if ([cmd isEqualToString:@"windows"]) {
 		for (NSWindow *w in Windows())
-			Log(@"window %@ %@ \"%@\"%@", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"");
+			Log(@"window %@ %@ \"%@\"%@ #%ld", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"", (long)[w windowNumber]);
 	}
 	Next();
 }

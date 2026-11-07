@@ -118,8 +118,22 @@ static BOOL xl_cached_draw(id self, SEL _cmd)
 	return ((BOOL (*)(id, SEL))orig_cached_draw)(self, _cmd);
 }
 
+// ---- drawing to screen ----------------------------------------------------------------------
+// A layer-backed NSOpenGLView draws with no current graphics context, which
+// +currentContextDrawingToScreen reports as not drawing to the screen; the
+// guest views then take their printing path. Printing always has a context.
+static IMP orig_drawingToScreen;
+static BOOL xl_drawingToScreen(id self, SEL _cmd)
+{
+	if (![NSGraphicsContext currentContext])
+		return YES;
+	return ((BOOL (*)(id, SEL))orig_drawingToScreen)(self, _cmd);
+}
+
 void xl_appkit_hooks(void)
 {
+	orig_drawingToScreen = method_setImplementation(class_getClassMethod([NSGraphicsContext class],
+		@selector(currentContextDrawingToScreen)), (IMP)xl_drawingToScreen);
 	Class vc = [NSView class];
 	orig_lockFocus = method_setImplementation(class_getInstanceMethod(vc, @selector(lockFocus)), (IMP)xl_lockFocus);
 	orig_lockFocusIfCanDraw = method_setImplementation(class_getInstanceMethod(vc, @selector(lockFocusIfCanDraw)),
