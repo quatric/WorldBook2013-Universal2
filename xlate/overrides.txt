@@ -1,0 +1,30 @@
+# Guest functions replaced by host code: symbol, host function (xlate/rt).
+# The bodies keep the guest's calling convention: arguments on the guest
+# stack, result in eax (or st0), return address popped by the host function.
+
+# SAPlayer: the app's AUGraph sound player (custom audio units through the
+# 32-bit Component Manager), played with AVAudioPlayer instead
+_SAPlayerCreate                     xl_sa_create
+_SAPlayerDispose                    xl_sa_dispose
+_SAPlayerSetFilename                xl_sa_set_filename
+_SAPlayerStart                      xl_sa_start
+_SAPlayerStop                       xl_sa_stop
+_SAPlayerIsPlaying                  xl_sa_is_playing
+_SAPlayerGetVolume                  xl_sa_get_volume
+_SAPlayerSetVolume                  xl_sa_set_volume
+_SAPlayerGetPan                     xl_sa_get_pan
+_SAPlayerSetPan                     xl_sa_set_pan
+_SAPlayerGetDuration                xl_sa_get_duration
+_SAPlayerGetCurrentSampleTime       xl_sa_get_time
+_SAPlayerSetCurrentSampleTime       xl_sa_set_time
+_SAPlayerSetStopNotificationCallback xl_sa_set_stop_callback
+_SAPlayerGetChannelCount            xl_sa_get_channels
+_SAPlayerGetBandsPerChannel         xl_sa_get_bands
+_SAPlayerSetBandsPerChannel         xl_sa_set_bands
+_SAPlayerGetLastAnalyzedAmplitudes  xl_sa_get_amplitudes
+_SAPlayerSetAmplitudeScaleFactor    xl_sa_set_scale
+_SAPlayerGetAmplitudeScaleFactor    xl_sa_get_scale
+_SAPlayerSetIsLooped                xl_sa_set_looped
+_SAPlayerGetIsLooped                xl_sa_get_looped
+_SAPlayerSetFadeOutStartPercent     xl_sa_set_fade
+_SAPlayerSetFadeInStopPercent       xl_sa_set_fade

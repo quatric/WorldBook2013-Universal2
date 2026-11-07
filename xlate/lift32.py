@@ -922,6 +922,10 @@ class Emitter:
     # ---- whole function ---------------------------------------------------
     def emit(self):
         f = self.f
+        ov = OVERRIDES.get(self.img.names.get(f.start, ''))
+        if ov:
+            # replaced by a host implementation (same convention as a shim)
+            return 'void %s(XLCPU *c)\n{\n\t%s(c);\n}\n' % (self.name(f.start), ov)
         out = ['void %s(XLCPU *c)\n{\n\tREGS;\n\tXL_TRACE(A(0x%x));\n\tgoto L_%x;' % (self.name(f.start), f.start, f.start)]
         for a in sorted(f.insns):
             i = f.insns[a]
@@ -977,6 +981,12 @@ class Emitter:
 
 XEXPORTS = set()
 UNSUP = []
+# guest functions whose bodies are host code: symbol -> host function (overrides.txt)
+OVERRIDES = {}
+for _ln in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'overrides.txt')):
+    _ln = _ln.split('#')[0].split()
+    if len(_ln) == 2:
+        OVERRIDES[_ln[0]] = _ln[1]
 
 
 def main():
@@ -1010,6 +1020,7 @@ def main():
     hdr = ['#include "xlcode.h"', 'extern uint32_t xl_slide_%s;' % ident, '#define S xl_slide_%s' % ident,
            'extern XLImport xl_imports_%s[];' % ident, '#define XI xl_imports_%s' % ident]
     hdr += ['void F_%s_%x(XLCPU *c);' % (ident, a) for a in order]
+    hdr += ['void %s(XLCPU *c);' % h for h in sorted(set(OVERRIDES.values()))]
     for s, why in failed.items():
         hdr.append('/* not translated: %x %s */' % (s, why))
     open(os.path.join(outdir, 'code.h'), 'w').write('\n'.join(hdr) + '\n')

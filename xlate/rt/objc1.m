@@ -128,7 +128,9 @@ uint32_t xl_hobj(id o)
 	uint32_t h = (uint32_t)xl_map_get(&p2h_obj, (uint64_t)o);
 	if (h)
 		return h;
-	if (!((uintptr_t)o & (1UL << 63))) {
+	// opaque references typed like objects (AUGraph, AudioUnit, ...) need not
+	// point at anything: nothing lives below 4 GB on arm64 and objects are aligned
+	if (!((uintptr_t)o & (1UL << 63)) && !((uintptr_t)o & 7) && (uintptr_t)o >= 0x100000000ull) {
 		Class cls = object_getClass(o);
 		GClass *g = (GClass *)xl_map_get(&ginfo, (uint64_t)cls);
 		if (g) {
@@ -982,6 +984,15 @@ static void xl_poseAsClass(id self, SEL _cmd, Class target)
 		return;
 	if (target == [NSAutoreleasePool class])
 		return;      // pools are runtime internals now
+	// the toolbar's private views were rewritten since: the skinned toolbar
+	// classes call methods that are gone, so the native toolbar stays
+	static const char *const keep[] = {"NSToolbarView", "NSToolbarItemViewer", "NSToolbarButton"};
+	for (unsigned i = 0; i < sizeof keep / sizeof *keep; i++)
+		if (!strcmp(class_getName(target), keep[i]) && !getenv("XL_POSE_TOOLBAR")) {
+			if (xl_verbose > 0)
+				xl_log("%s does not pose as %s", class_getName(p), keep[i]);
+			return;
+		}
 	char nm[256];
 	snprintf(nm, sizeof nm, "XLOriginal_%s", class_getName(target));
 	Class orig = objc_getClass(nm);

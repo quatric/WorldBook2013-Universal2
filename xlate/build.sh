@@ -27,7 +27,7 @@ for f in xlate/rt/*.m xlate/rt/*.c; do
 done
 $CC -o build/WorldBook build/rt/*.o build/x/*/*.o -lffi \
 	-framework AppKit -framework Foundation -framework Carbon -framework OpenGL -framework WebKit \
-	-framework AudioToolbox -framework AudioUnit -framework CoreAudio -framework Security \
+	-framework AudioToolbox -framework AVFoundation -framework AudioUnit -framework CoreAudio -framework Security \
 	-framework SystemConfiguration -framework IOKit -framework ApplicationServices -framework Accelerate \
 	-framework CoreServices -framework QuartzCore -lsqlite3 -lz \
 	-Wl,-w

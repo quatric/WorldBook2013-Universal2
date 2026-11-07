@@ -12,4 +12,12 @@ rsync -a --exclude "/Contents/MacOS/2013 World Book" "$SRC/" "$APP/"
 # signature is kept (the bundle itself carries the original's resources)
 rm -f "$APP/Contents/MacOS/2013 World Book"
 cp build/WorldBook "$APP/Contents/MacOS/2013 World Book"
+# the DVD's content where a full install puts it (the app looks in its
+# Resources before asking for the disc); WB_DVD is the mounted disc image
+DVD=${WB_DVD:-"/Volumes/World Book DVD"}
+for cd in CD1 CD2; do
+	if [ -d "$DVD/2013CDs/$cd/INFO_DAT" ] && [ ! -e "$APP/Contents/Resources/$cd" ]; then
+		ln -s "$DVD/2013CDs/$cd" "$APP/Contents/Resources/$cd"
+	fi
+done
 echo "$APP"

@@ -857,12 +857,52 @@ static void sh_glTexImage2D(XLCPU *c)
 	xl_ret(c, 0);
 }
 
+// ---- Component Manager -----------------------------------------------------------------------
+// Components and instances are opaque references (small integers, not
+// pointers). The app's own audio units cannot be registered: their entry
+// points take i386 ComponentParameters, so registering fails as it may.
+static void sh_RegisterComponent(XLCPU *c) { xl_ret(c, 0); }
+
+static void sh_FindNextComponent(XLCPU *c)
+{
+	Component r = FindNextComponent((Component)xl_p(A(0)), A(1) ? (ComponentDescription *)GP(A(1)) : NULL);
+	xl_ret(c, r ? xl_h(r) : 0);
+}
+
+static void sh_UnregisterComponent(XLCPU *c) { xl_ret(c, (uint16_t)UnregisterComponent((Component)xl_p(A(0)))); }
+
+static void sh_SetDefaultComponent(XLCPU *c)
+{
+	xl_ret(c, (uint16_t)SetDefaultComponent((Component)xl_p(A(0)), (SInt16)A(1)));
+}
+
+static void sh_GetComponentInfo(XLCPU *c)
+{
+	ComponentDescription d = {0};
+	OSErr e = GetComponentInfo((Component)xl_p(A(0)), &d, NULL, NULL, NULL);
+	if (A(1))
+		memcpy(GP(A(1)), &d, sizeof d);
+	xl_ret(c, (uint16_t)e);
+}
+
+static void sh_OpenDefaultComponent(XLCPU *c)
+{
+	ComponentInstance r = OpenDefaultComponent((OSType)A(0), (OSType)A(1));
+	xl_ret(c, r ? xl_h(r) : 0);
+}
+
+static void sh_CloseComponent(XLCPU *c) { xl_ret(c, (uint16_t)CloseComponent((ComponentInstance)xl_p(A(0)))); }
+
 // ---- table ---------------------------------------------------------------------------------------------------------
 typedef struct { const char *name; XLShim fn; } ShimEnt;
 static const ShimEnt shims[] = {
 	{"_FSpCreateResFile", sh_FSpCreateResFile}, {"_FSpOpenResFile", sh_FSpOpenResFile}, {"_NewAlias", sh_NewAlias},
 	{"_ResError", sh_ResError}, {"_CGLQueryRendererInfo", sh_CGLQueryRendererInfo},
-	{"_CGLChoosePixelFormat", sh_CGLChoosePixelFormat}, {"_glTexImage2D", sh_glTexImage2D}, {"_GetProcessInformation", sh_GetProcessInformation},
+	{"_CGLChoosePixelFormat", sh_CGLChoosePixelFormat}, {"_glTexImage2D", sh_glTexImage2D},
+	{"_RegisterComponent", sh_RegisterComponent}, {"_FindNextComponent", sh_FindNextComponent},
+	{"_UnregisterComponent", sh_UnregisterComponent}, {"_SetDefaultComponent", sh_SetDefaultComponent},
+	{"_GetComponentInfo", sh_GetComponentInfo}, {"_OpenDefaultComponent", sh_OpenDefaultComponent},
+	{"_CloseComponent", sh_CloseComponent}, {"_GetProcessInformation", sh_GetProcessInformation},
 	{"_malloc", sh_malloc}, {"_calloc", sh_calloc}, {"_realloc", sh_realloc}, {"_free", sh_free},
 	{"_valloc", sh_valloc},
 	{"_NewPtr", sh_NewPtr}, {"_NewPtrClear", sh_NewPtrClear}, {"_DisposePtr", sh_DisposePtr},
