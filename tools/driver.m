@@ -16,6 +16,7 @@
 #include <objc/runtime.h>
 
 static NSMutableArray *sSteps;
+static NSView *sLastHit;     // the view the last `mouse` landed on
 
 static void Log(NSString *aFormat, ...)
 {
@@ -105,9 +106,15 @@ static void Shot(NSString *aPath)
 static void Key(NSString *aName)
 {
 	NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow];
+	NSWindow *target = w ?: [sLastHit window];
 	NSDictionary *codes = @{ @"return": @[@"\r", @36], @"tab": @[@"\t", @48], @"esc": @[@"\x1b", @53] };
 	NSArray *k = codes[aName];
-	NSEvent *e = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:[w windowNumber] context:nil characters:k[0] charactersIgnoringModifiers:k[0] isARepeat:NO keyCode:[k[1] unsignedShortValue]];
+	NSEvent *e = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:[target windowNumber] context:nil characters:k[0] charactersIgnoringModifiers:k[0] isARepeat:NO keyCode:[k[1] unsignedShortValue]];
+	// no key window (the app is not activated): the clicked window becomes key
+	// within the app; the event is queued so that it is the current event
+	// while it is handled
+	if (!w)
+		[target makeKeyWindow];
 	[NSApp postEvent:e atStart:NO];
 }
 
@@ -184,8 +191,17 @@ static void Run(NSString *aLine)
 	} else if ([cmd isEqualToString:@"menu"]) {
 		Log(@"menu %@: %@", arg, MenuIn([NSApp mainMenu], arg) ? @"ok" : @"NOT FOUND");
 	} else if ([cmd isEqualToString:@"type"]) {
-		NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow];
+		// the app is not activated (that would take the user's keyboard), so
+		// there may be no key window: the window of the last click stands in
+		NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow] ?: [sLastHit window];
 		id responder = [w firstResponder];
+		if (![responder respondsToSelector:@selector(insertText:)] && sLastHit) {
+			NSView *v = sLastHit;
+			while (v && ![v isKindOfClass:[NSTextField class]] && ![v isKindOfClass:[NSTextView class]])
+				v = [v superview];
+			if (v && [w makeFirstResponder:v])
+				responder = [w firstResponder];
+		}
 		if ([responder respondsToSelector:@selector(insertText:)])
 			[responder insertText:arg];
 		Log(@"type into %@", NSStringFromClass([responder class]));
@@ -206,7 +222,14 @@ static void Run(NSString *aLine)
 			[NSApp postEvent:up atStart:NO];
 		}
 		NSView *frame = [[w contentView] superview] ?: [w contentView];
+		sLastHit = [frame hitTest:[frame convertPoint:p fromView:nil]];
 		Log(@"%@ %@ in %@, hits %@ (app %@, window %@)", cmd, NSStringFromPoint(p), NSStringFromClass([w class]), [frame hitTest:[frame convertPoint:p fromView:nil]], [NSApp isActive] ? @"active" : @"inactive", [w isKeyWindow] ? @"key" : @"not key");
+	} else if ([cmd isEqualToString:@"ftrace"]) {
+		// logs every translated function entered from here on (1) or stops (0)
+		int *v = dlsym(RTLD_DEFAULT, "xl_trace_on");
+		if (v)
+			*v = [arg intValue];
+		Log(@"ftrace %@%@", arg, v ? @"" : @" (no runtime)");
 	} else if ([cmd isEqualToString:@"trace"]) {
 		// sets the translated runtime's verbosity from here on
 		int *v = dlsym(RTLD_DEFAULT, "xl_verbose");

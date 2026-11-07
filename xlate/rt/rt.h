@@ -138,3 +138,9 @@ void xl_host_method_replaced(Class cls, SEL sel, IMP orig, IMP guest);
 
 // bridge type for a host type encoding (bridge.m)
 XLType *xl_from_host_enc(const char *e);
+
+// NSMapTable/NSHashTable callback structs as the guest sees them (data.m, maptable.m)
+#define XL_CB_MAGIC 0x31424358u   // "XCB1"
+#define XL_CB_OBJECT 1u           // keys or values are objects compared with -isEqual:
+#define XL_CB_RETAIN 2u           // objects are retained while in the table
+#define XL_CB_FREE 4u             // pointers are freed when removed

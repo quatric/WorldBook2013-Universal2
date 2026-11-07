@@ -893,12 +893,41 @@ static void sh_OpenDefaultComponent(XLCPU *c)
 
 static void sh_CloseComponent(XLCPU *c) { xl_ret(c, (uint16_t)CloseComponent((ComponentInstance)xl_p(A(0)))); }
 
+// maptable.m
+void xl_sh_NSCreateMapTable(XLCPU *c);
+void xl_sh_NSCreateMapTableWithZone(XLCPU *c);
+void xl_sh_NSFreeMapTable(XLCPU *c);
+void xl_sh_NSResetMapTable(XLCPU *c);
+void xl_sh_NSMapGet(XLCPU *c);
+void xl_sh_NSMapMember(XLCPU *c);
+void xl_sh_NSMapInsert(XLCPU *c);
+void xl_sh_NSMapInsertKnownAbsent(XLCPU *c);
+void xl_sh_NSMapInsertIfAbsent(XLCPU *c);
+void xl_sh_NSMapRemove(XLCPU *c);
+void xl_sh_NSCountMapTable(XLCPU *c);
+void xl_sh_NSAllMapTableValues(XLCPU *c);
+void xl_sh_NSAllMapTableKeys(XLCPU *c);
+void xl_sh_NSEnumerateMapTable(XLCPU *c);
+void xl_sh_NSNextMapEnumeratorPair(XLCPU *c);
+void xl_sh_NSEndMapTableEnumeration(XLCPU *c);
+void xl_sh_NSCreateHashTable(XLCPU *c);
+void xl_sh_NSCreateHashTableWithZone(XLCPU *c);
+void xl_sh_NSFreeHashTable(XLCPU *c);
+void xl_sh_NSResetHashTable(XLCPU *c);
+void xl_sh_NSHashGet(XLCPU *c);
+void xl_sh_NSHashInsert(XLCPU *c);
+void xl_sh_NSHashInsertKnownAbsent(XLCPU *c);
+void xl_sh_NSHashInsertIfAbsent(XLCPU *c);
+void xl_sh_NSHashRemove(XLCPU *c);
+void xl_sh_NSCountHashTable(XLCPU *c);
+
 // ---- table ---------------------------------------------------------------------------------------------------------
 typedef struct { const char *name; XLShim fn; } ShimEnt;
 static const ShimEnt shims[] = {
 	{"_FSpCreateResFile", sh_FSpCreateResFile}, {"_FSpOpenResFile", sh_FSpOpenResFile}, {"_NewAlias", sh_NewAlias},
 	{"_ResError", sh_ResError}, {"_CGLQueryRendererInfo", sh_CGLQueryRendererInfo},
 	{"_CGLChoosePixelFormat", sh_CGLChoosePixelFormat}, {"_glTexImage2D", sh_glTexImage2D},
+	{"_NSCreateMapTable", xl_sh_NSCreateMapTable}, {"_NSCreateMapTableWithZone", xl_sh_NSCreateMapTableWithZone}, {"_NSFreeMapTable", xl_sh_NSFreeMapTable}, {"_NSResetMapTable", xl_sh_NSResetMapTable}, {"_NSMapGet", xl_sh_NSMapGet}, {"_NSMapMember", xl_sh_NSMapMember}, {"_NSMapInsert", xl_sh_NSMapInsert}, {"_NSMapInsertKnownAbsent", xl_sh_NSMapInsertKnownAbsent}, {"_NSMapInsertIfAbsent", xl_sh_NSMapInsertIfAbsent}, {"_NSMapRemove", xl_sh_NSMapRemove}, {"_NSCountMapTable", xl_sh_NSCountMapTable}, {"_NSAllMapTableValues", xl_sh_NSAllMapTableValues}, {"_NSAllMapTableKeys", xl_sh_NSAllMapTableKeys}, {"_NSEnumerateMapTable", xl_sh_NSEnumerateMapTable}, {"_NSNextMapEnumeratorPair", xl_sh_NSNextMapEnumeratorPair}, {"_NSEndMapTableEnumeration", xl_sh_NSEndMapTableEnumeration}, {"_NSCreateHashTable", xl_sh_NSCreateHashTable}, {"_NSCreateHashTableWithZone", xl_sh_NSCreateHashTableWithZone}, {"_NSFreeHashTable", xl_sh_NSFreeHashTable}, {"_NSResetHashTable", xl_sh_NSResetHashTable}, {"_NSHashGet", xl_sh_NSHashGet}, {"_NSHashInsert", xl_sh_NSHashInsert}, {"_NSHashInsertKnownAbsent", xl_sh_NSHashInsertKnownAbsent}, {"_NSHashInsertIfAbsent", xl_sh_NSHashInsertIfAbsent}, {"_NSHashRemove", xl_sh_NSHashRemove}, {"_NSCountHashTable", xl_sh_NSCountHashTable},
 	{"_RegisterComponent", sh_RegisterComponent}, {"_FindNextComponent", sh_FindNextComponent},
 	{"_UnregisterComponent", sh_UnregisterComponent}, {"_SetDefaultComponent", sh_SetDefaultComponent},
 	{"_GetComponentInfo", sh_GetComponentInfo}, {"_OpenDefaultComponent", sh_OpenDefaultComponent},

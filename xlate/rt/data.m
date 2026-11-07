@@ -80,9 +80,20 @@ static uint32_t make(const char *name)
 		return g;
 	}
 	if (strstr(name, "CallBacks")) {
+		// NSMapTable/NSHashTable callbacks: the guest passes copies of these by
+		// value, so they carry what they mean for maptable.m to read back
 		g = dalloc(64);
 		if (sym)
 			xl_bind_handle(g, sym);
+		uint32_t flags = 0;
+		if (strstr(name, "Object"))
+			flags |= XL_CB_OBJECT;
+		if (strstr(name, "Object") && !strstr(name, "NonRetained"))
+			flags |= XL_CB_RETAIN;
+		if (strstr(name, "Owned") && !strstr(name, "NonOwned"))
+			flags |= XL_CB_FREE;
+		*(uint32_t *)GP(g) = XL_CB_MAGIC;
+		*(uint32_t *)GP(g + 4) = flags;
 		return g;
 	}
 	if (!sym) {
