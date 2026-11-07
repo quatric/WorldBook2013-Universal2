@@ -1,0 +1,14 @@
+# analysis file           id     install name
+2013_World_Book-i386      wb     exe
+LFoundation-i386          lf     @executable_path/../Frameworks/LFoundation.framework/Versions/A/LFoundation
+SMKAppKit-i386            smka   @executable_path/../Frameworks/SMKAppKit.framework/Versions/A/SMKAppKit
+SMKControls-i386          smkc   @executable_path/../Frameworks/SMKControls.framework/Versions/A/SMKControls
+SMKFoundation-i386        smkf   @executable_path/../Frameworks/SMKFoundation.framework/Versions/A/SMKFoundation
+SMKGL-i386                smkg   @executable_path/../Frameworks/SMKGL.framework/Versions/A/SMKGL
+SMKGLKit-i386             smkgk  @executable_path/../Frameworks/SMKGLKit.framework/Versions/B/SMKGLKit
+SMKSpeechSynthesis-i386   smks   @executable_path/../Frameworks/SMKSpeechSynthesis.framework/Versions/A/SMKSpeechSynthesis
+SMKText-i386              smkt   @executable_path/../Frameworks/SMKText.framework/Versions/A/SMKText
+SQLiteLib-i386            sql    @executable_path/../Frameworks/SQLiteLib.framework/Versions/A/SQLiteLib
+WBHomeScreen-i386         home   @executable_path/../Frameworks/WBHomeScreen.framework/Versions/B/WBHomeScreen
+WBMediaProvider-i386      media  @executable_path/../Frameworks/WBMediaProvider.framework/Versions/B/WBMediaProvider
+WebCamsDB_C-i386          cams   @executable_path/../Frameworks/WebCamsDB_C.framework/Versions/A/WebCamsDB_C
