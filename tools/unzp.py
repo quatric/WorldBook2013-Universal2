@@ -31,6 +31,8 @@ for task in p['YAAllTasksRepresentationsKey']:
         continue
     key = task['PluginClassProperties']['YAPluginClassUniquieKey']
     dest = task.get('kInstallSubpathKey') or os.path.basename(task['kSourceLocationKey'])
+    while dest.startswith('../'):   # relative to the installer's target folder's parent
+        dest = dest[3:]
     root = os.path.normpath(os.path.join(out, dest))
     assert root.startswith(os.path.normpath(out))
     for e in files[key]['FilesList']:
