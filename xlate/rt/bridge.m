@@ -397,9 +397,17 @@ static int fmt_args(const char *f, uint32_t *gva, Args *A, int base, int max, in
 			break;
 		case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case 'a': case 'A':
 			if (L) {
-				*(double *)A->store[n] = xl_ld80(g);
 				*gva += 16;
+#if defined(__x86_64__)
+				// the host format still says L, and long double is the x87 type here
+				long double v = xl_ld80(g);
+				memcpy(A->store[n], &v, sizeof v);
+				A->ft[n] = &ffi_type_longdouble;
+				break;
+#else
 				// the host format still says L: long double is double on arm64
+				*(double *)A->store[n] = xl_ld80(g);
+#endif
 			} else {
 				memcpy(A->store[n], GP(g), 8);
 				*gva += 8;
@@ -808,6 +816,7 @@ XLType *xl_from_host_enc(const char *e)
 static void spec_methodForSelector(XLCPU *c, MsgSig *m, id self, uint32_t a0);
 static void spec_bytes(XLCPU *c, MsgSig *m, id self, uint32_t a0);
 static void spec_fastenum(XLCPU *c, MsgSig *m, id self, uint32_t a0);
+static void spec_perform(XLCPU *c, MsgSig *m, id self, uint32_t a0);
 
 static void array_counts(MsgSig *m)
 {
@@ -893,6 +902,9 @@ static MsgSig *msg_sig(Class cls, SEL sel, IMP imp, int meta, int nargs_hint)
 		m->special = spec_bytes;
 	else if (!strcmp(s, "countByEnumeratingWithState:objects:count:"))
 		m->special = spec_fastenum;
+	else if (!strcmp(s, "performSelector:") || !strcmp(s, "performSelector:withObject:")
+		|| !strcmp(s, "performSelector:withObject:withObject:"))
+		m->special = spec_perform;
 	return m;
 }
 
@@ -1267,6 +1279,50 @@ static void spec_methodForSelector(XLCPU *c, MsgSig *m, id self, uint32_t a0)
 	uint32_t g = xl_guest_imp_of(imp);
 	c->r[EAX] = g ? g : xl_thunk_for("_objc_msgSend");
 	c->r[ESP] += 4;
+}
+
+// -performSelector:withObject: of a translated method: the method is called
+// with the guest's own words, as on i386, where the "objects" are often
+// integers in disguise (an index, a flag) that are no object handles
+// A host method is called the same way, its arguments converted by its own
+// signature (a BOOL or an integer passed as an object stays one).
+static void spec_perform(XLCPU *c, MsgSig *m, id self, uint32_t a0)
+{
+	uint32_t gs = *(uint32_t *)GP(a0 + 8);
+	SEL s = gs ? xl_hsel(gs) : NULL;
+	Class cls = object_getClass(self);
+	IMP imp = s && [self respondsToSelector:s] ? class_getMethodImplementation(cls, s) : NULL;
+	uint32_t g = imp ? xl_guest_imp_of(imp) : 0;
+	MsgSig *t = NULL;
+	if (imp && !g) {
+		uint64_t key = ((uint64_t)(uintptr_t)cls * 31) ^ (uint64_t)(uintptr_t)s;
+		t = (MsgSig *)xl_map_get(&msgcache, key);
+		if (!t || t->cls != cls || t->sel != s) {
+			int nargs = 0;
+			for (const char *p = sel_getName(s); *p; p++)
+				nargs += *p == ':';
+			t = msg_sig(cls, s, imp, class_isMetaClass(cls), nargs);
+			xl_map_put(&msgcache, key, (uint64_t)t);
+		}
+		Method me = class_getInstanceMethod(cls, s);
+		const char *rt = me ? method_getTypeEncoding(me) : NULL;
+		if (t->special || !rt || strchr("{df", *rt))   // returns nothing performSelector: could pass on
+			t = NULL;
+	}
+	if (!g && !t) {
+		msg_host(c, m, self, a0, 0);
+		return;
+	}
+	int n = 0;
+	for (const char *p = sel_getName(m->sel); *p; p++)
+		n += *p == ':';
+	// self, performSelector:..., sel, objects -> self, sel, objects (the callee owns its arguments)
+	for (int i = 0; i < n; i++)
+		*(uint32_t *)GP(a0 + 4 + 4 * i) = *(uint32_t *)GP(a0 + 8 + 4 * i);
+	if (g)
+		xl_call(c, g);
+	else
+		msg_host(c, t, self, a0, 0);
 }
 
 static char bytes_key;

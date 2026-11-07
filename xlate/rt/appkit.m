@@ -229,8 +229,386 @@ static void stable_line_fragments(const char *cls)
 	class_addMethod(c, s, (IMP)xl_tc_lineFragmentRect, method_getTypeEncoding(m));
 }
 
+// ---- home screen layout ----------------------------------------------------------------------
+// The home screen is a borderless window the size of a layout minus 22 points:
+// its layouts are sized to whole screens, less the 22-point menu bar of 2013.
+// -[LayoutController loadBestLayoutForScreen:] picks the largest that fits
+// -[NSScreen frame], so with today's taller menu bar, and a Dock, the window
+// runs off the visible area (on 1280x720 its top goes under the menu bar and
+// its bottom off the screen). While the layout is chosen, the screen reports
+// its visible area plus those 22 points; the window is then kept inside the
+// visible area, and its title bar (if it has one) made transparent.
+static IMP orig_screen_frame, orig_load_layout, orig_create_window;
+static int choosing_layout;
+
+static NSRect xl_screen_frame(NSScreen *self, SEL _cmd)
+{
+	NSRect f = ((NSRect (*)(id, SEL))orig_screen_frame)(self, _cmd);
+	if (!choosing_layout)
+		return f;
+	int saved = choosing_layout;
+	choosing_layout = 0;   // -visibleFrame asks for -frame
+	NSRect v = [self visibleFrame];
+	choosing_layout = saved;
+	v.size.height += 22;
+	if (xl_verbose > 0)
+		xl_log("home screen layout for %gx%g", v.size.width, v.size.height);
+	return v;
+}
+
+static id xl_load_layout(id self, SEL _cmd, NSScreen *screen)
+{
+	choosing_layout++;
+	id r = ((id (*)(id, SEL, NSScreen *))orig_load_layout)(self, _cmd, screen);
+	choosing_layout--;
+	return r;
+}
+
+static id xl_create_window(id self, SEL _cmd, NSScreen *screen)
+{
+	id r = ((id (*)(id, SEL, NSScreen *))orig_create_window)(self, _cmd, screen);
+	NSWindow *w = [self window];
+	NSScreen *s = screen ?: [w screen] ?: [NSScreen mainScreen];
+	if (w && ([w styleMask] & NSWindowStyleMaskTitled)) {
+		// on the screen with the menu bar the window has a title bar, drawn
+		// over the layout's top 22 points (left for it); today's is taller and
+		// would cover the artwork, so it is transparent over the layout
+		[w setStyleMask:[w styleMask] | NSWindowStyleMaskFullSizeContentView];
+		[w setTitlebarAppearsTransparent:YES];
+		[w setTitleVisibility:NSWindowTitleHidden];
+	}
+	if (w && s) {
+		NSRect f = [w frame], v = [s visibleFrame];
+		NSRect g = f;
+		g.origin.x = MAX(NSMinX(v), MIN(NSMinX(f), NSMaxX(v) - NSWidth(f)));
+		g.origin.y = MAX(NSMinY(v), MIN(NSMinY(f), NSMaxY(v) - NSHeight(f)));
+		if (!NSEqualRects(f, g)) {
+			if (xl_verbose > 0)
+				xl_log("home window moved from %s to %s", [NSStringFromRect(f) UTF8String], [NSStringFromRect(g) UTF8String]);
+			[w setFrame:g display:NO];
+		}
+	}
+	return r;
+}
+
+static void fitting_home_layout(void)
+{
+	Class c = objc_getClass("LayoutController");
+	Method m = c ? class_getInstanceMethod(c, @selector(loadBestLayoutForScreen:)) : NULL;
+	if (!m)
+		return;
+	orig_load_layout = method_setImplementation(m, (IMP)xl_load_layout);
+	m = class_getInstanceMethod(c, @selector(createWindowOnScreen:));
+	if (m)
+		orig_create_window = method_setImplementation(m, (IMP)xl_create_window);
+	orig_screen_frame = method_setImplementation(class_getInstanceMethod([NSScreen class], @selector(frame)),
+		(IMP)xl_screen_frame);
+}
+
+// ---- bundles translated into the executable ------------------------------------------------
+// Preference panes and plug-ins are i386 bundles the app loads with NSBundle.
+// Their code is translated with the app (xlate/images.txt) and their classes
+// registered at launch, so loading one of them is already done: -load says
+// so, and -principalClass and -classNamed: answer with the translated classes.
+static IMP orig_bundle_load, orig_bundle_loadErr, orig_bundle_isLoaded, orig_bundle_principal, orig_bundle_classNamed,
+	orig_bundle_preflight;
+static NSSet *translated_bundle_exes;
+
+static BOOL translated_bundle(NSBundle *b)
+{
+	NSString *e = [[b executablePath] stringByResolvingSymlinksInPath];
+	return e && [translated_bundle_exes containsObject:e];
+}
+
+static BOOL xl_bundle_load(NSBundle *self, SEL _cmd)
+{
+	return translated_bundle(self) || ((BOOL (*)(id, SEL))orig_bundle_load)(self, _cmd);
+}
+
+static BOOL xl_bundle_loadErr(NSBundle *self, SEL _cmd, NSError **err)
+{
+	return translated_bundle(self) || ((BOOL (*)(id, SEL, NSError **))orig_bundle_loadErr)(self, _cmd, err);
+}
+
+static BOOL xl_bundle_preflight(NSBundle *self, SEL _cmd, NSError **err)
+{
+	return translated_bundle(self) || ((BOOL (*)(id, SEL, NSError **))orig_bundle_preflight)(self, _cmd, err);
+}
+
+static BOOL xl_bundle_isLoaded(NSBundle *self, SEL _cmd)
+{
+	return translated_bundle(self) || ((BOOL (*)(id, SEL))orig_bundle_isLoaded)(self, _cmd);
+}
+
+static Class xl_bundle_principal(NSBundle *self, SEL _cmd)
+{
+	if (translated_bundle(self)) {
+		NSString *n = [self objectForInfoDictionaryKey:@"NSPrincipalClass"];
+		Class c = n ? NSClassFromString(n) : nil;
+		if (xl_verbose)
+			xl_log("principal class of %s: %s", [[self bundlePath] fileSystemRepresentation], c ? class_getName(c) : "none");
+		return c;
+	}
+	return ((Class (*)(id, SEL))orig_bundle_principal)(self, _cmd);
+}
+
+static Class xl_bundle_classNamed(NSBundle *self, SEL _cmd, NSString *name)
+{
+	if (translated_bundle(self))
+		return NSClassFromString(name);
+	return ((Class (*)(id, SEL, NSString *))orig_bundle_classNamed)(self, _cmd, name);
+}
+
+static void translated_bundles(void)
+{
+	NSString *dir = [[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent];
+	NSMutableSet *s = [NSMutableSet set];
+	for (XLImage *im = xl_images; im; im = im->next) {
+		if (!im->install || strncmp(im->install, "@executable_path/", 17) || !strstr(im->install, "/Contents/MacOS/"))
+			continue;
+		NSString *p = [dir stringByAppendingPathComponent:[NSString stringWithUTF8String:im->install + 17]];
+		[s addObject:[[p stringByStandardizingPath] stringByResolvingSymlinksInPath]];
+	}
+	if (![s count])
+		return;
+	translated_bundle_exes = [s copy];
+	if (xl_verbose)
+		xl_log("translated bundles: %s", [[s description] UTF8String]);
+	Class b = [NSBundle class];
+#define HOOK(sel, fn, orig) orig = method_setImplementation(class_getInstanceMethod(b, @selector(sel)), (IMP)fn)
+	HOOK(load, xl_bundle_load, orig_bundle_load);
+	HOOK(loadAndReturnError:, xl_bundle_loadErr, orig_bundle_loadErr);
+	HOOK(preflightAndReturnError:, xl_bundle_preflight, orig_bundle_preflight);
+	HOOK(isLoaded, xl_bundle_isLoaded, orig_bundle_isLoaded);
+	HOOK(principalClass, xl_bundle_principal, orig_bundle_principal);
+	HOOK(classNamed:, xl_bundle_classNamed, orig_bundle_classNamed);
+#undef HOOK
+}
+
+// ---- boxes in old nibs --------------------------------------------------------------------
+// Old nibs draw lines as boxes a couple of points tall, with the default
+// title ("Box") left on: the title fell outside the box and was clipped
+// away. Views no longer clip to their bounds by default (macOS 14), so such
+// boxes from typedstream (pre-keyed) nibs, too short to show a title, lose it.
+// Borderless ones still carrying the placeholder title lose the placeholder.
+static IMP orig_box_initWithCoder;
+
+static id xl_box_initWithCoder(NSBox *self, SEL _cmd, NSCoder *c)
+{
+	self = ((id (*)(id, SEL, NSCoder *))orig_box_initWithCoder)(self, _cmd, c);
+	if (!self || [c allowsKeyedCoding] || [self titlePosition] == NSNoTitle)
+		return self;
+	if (NSHeight([self frame]) < NSHeight([self titleRect]))
+		[self setTitlePosition:NSNoTitle];
+	else if ([self borderType] == NSNoBorder && ([[self title] isEqualToString:@"Title"] || [[self title] isEqualToString:@"Box"]))
+		// borderless boxes that only group views keep Interface Builder's
+		// placeholder title, which AppKit of the time did not show; emptied
+		// rather than removed so the content stays where the nib put it
+		[self setTitle:@""];
+	return self;
+}
+
+static void clipping_old_boxes(void)
+{
+	orig_box_initWithCoder = method_setImplementation(class_getInstanceMethod([NSBox class], @selector(initWithCoder:)),
+		(IMP)xl_box_initWithCoder);
+}
+
+// ---- help books --------------------------------------------------------------------------
+// Help Viewer is gone (macOS 27): Apple Help calls succeed and show nothing.
+// The help books are HTML folders in the bundles, so pages open in the
+// default browser instead (on macOS 27, com.apple.helpviewer is Tips, which
+// shows them blank). A book is found by its CFBundleHelpBookName in the
+// bundles registered with AHRegisterHelpBook (and the main bundle); its
+// pages are in the CFBundleHelpBookFolder resource or, for a .help bundle,
+// in its localized resources.
+static NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *help_books;
+static NSMutableDictionary<NSString *, NSString *> *help_tocs;
+
+void xl_help_register(NSURL *url)
+{
+	NSBundle *b = url ? [NSBundle bundleWithURL:url] : [NSBundle mainBundle];
+	NSString *name = [b objectForInfoDictionaryKey:@"CFBundleHelpBookName"];
+	if (!name)
+		return;
+	if (!help_books) {
+		help_books = [[NSMutableDictionary alloc] init];
+		help_tocs = [[NSMutableDictionary alloc] init];
+	}
+	NSMutableArray *dirs = help_books[name] ?: (help_books[name] = [NSMutableArray array]);
+	NSString *folder = [b objectForInfoDictionaryKey:@"CFBundleHelpBookFolder"];
+	NSMutableArray *cand = [NSMutableArray array];
+	if (folder) {
+		NSString *p = [b pathForResource:folder ofType:nil];
+		if (p)
+			[cand addObject:p];
+	}
+	if ([[[b bundlePath] pathExtension] isEqualToString:@"help"]) {
+		for (NSString *l in [b preferredLocalizations])
+			[cand addObject:[[b resourcePath] stringByAppendingPathComponent:[l stringByAppendingPathExtension:@"lproj"]]];
+		[cand addObject:[b resourcePath]];
+	}
+	BOOL isDir;
+	for (NSString *p in cand) {
+		p = [p stringByResolvingSymlinksInPath];
+		if ([[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir] && isDir && ![dirs containsObject:p])
+			[dirs addObject:p];
+	}
+	NSString *toc = [b objectForInfoDictionaryKey:@"CFBundleHelpTOCFile"];
+	if (toc && !help_tocs[name])
+		help_tocs[name] = toc;
+	if (xl_verbose)
+		xl_log("help book '%s': %s", [name UTF8String], [[dirs description] UTF8String]);
+}
+
+static NSArray<NSString *> *help_dirs(NSString **book)
+{
+	if (!help_books)
+		xl_help_register(nil);
+	if (!*book)
+		*book = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleHelpBookName"];
+	if (*book && !help_books[*book])
+		xl_help_register(nil);
+	return *book ? help_books[*book] : nil;
+}
+
+static NSArray<NSString *> *help_pages(NSArray<NSString *> *dirs)
+{
+	NSMutableArray *l = [NSMutableArray array];
+	for (NSString *d in dirs)
+		for (NSString *f in [[NSFileManager defaultManager] enumeratorAtPath:d]) {
+			NSString *e = [[f pathExtension] lowercaseString];
+			if ([e isEqualToString:@"htm"] || [e isEqualToString:@"html"])
+				[l addObject:[d stringByAppendingPathComponent:f]];
+		}
+	return l;
+}
+
+static BOOL help_open(NSString *file, NSString *anchor)
+{
+	if (!file)
+		return NO;
+	NSURLComponents *u = [NSURLComponents componentsWithURL:[NSURL fileURLWithPath:file] resolvingAgainstBaseURL:NO];
+	if (anchor.length)
+		u.fragment = anchor;
+	NSWorkspace *ws = [NSWorkspace sharedWorkspace];
+	// the browser, not whatever opens .htm files, so the anchor is kept
+	NSURL *browser = [ws URLForApplicationToOpenURL:[NSURL URLWithString:@"https://example.com/"]];
+	if (xl_verbose || getenv("XL_HELP_DRYRUN"))
+		xl_log("help page %s", [[u.URL absoluteString] UTF8String]);
+	if (getenv("XL_HELP_DRYRUN"))
+		return YES;
+	if (!browser)
+		return [ws openURL:u.URL];
+	[ws openURLs:@[u.URL] withApplicationAtURL:browser configuration:[NSWorkspaceOpenConfiguration configuration]
+		completionHandler:nil];
+	return YES;
+}
+
+static NSString *help_toc(NSString *book, NSArray<NSString *> *dirs)
+{
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSMutableArray *names = [NSMutableArray array];
+	if (help_tocs[book])
+		[names addObject:help_tocs[book]];
+	[names addObjectsFromArray:@[@"index.html", @"index.htm"]];
+	for (NSString *n in names)
+		for (NSString *d in dirs)
+			if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:n]])
+				return [d stringByAppendingPathComponent:n];
+	// a page named like its folder or book ("Trivia Help.html")
+	for (NSString *p in help_pages(dirs)) {
+		NSString *base = [[p lastPathComponent] stringByDeletingPathExtension];
+		if ([book hasPrefix:base] || [base isEqualToString:[[p stringByDeletingLastPathComponent] lastPathComponent]])
+			return p;
+	}
+	return [help_pages(dirs) firstObject];
+}
+
+static NSString *help_find_anchor(NSArray<NSString *> *dirs, NSString *anchor)
+{
+	NSString *pat = [NSString stringWithFormat:@"(name|id)\\s*=\\s*\"?%@[\"\\s>]", [NSRegularExpression escapedPatternForString:anchor]];
+	NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:pat options:NSRegularExpressionCaseInsensitive error:nil];
+	for (NSString *p in help_pages(dirs)) {
+		NSString *s = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil]
+			?: [NSString stringWithContentsOfFile:p encoding:NSISOLatin1StringEncoding error:nil];
+		if (s && [re firstMatchInString:s options:0 range:NSMakeRange(0, s.length)])
+			return p;
+	}
+	return nil;
+}
+
+// AHGotoPage(book, path, anchor): 0, or paramErr when there is no such book
+int xl_help_goto(NSString *book, NSString *path, NSString *anchor)
+{
+	if (xl_verbose)
+		xl_log("help goto book '%s' path '%s' anchor '%s'", [book UTF8String], [path UTF8String], [anchor UTF8String]);
+	NSArray *dirs = help_dirs(&book);
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSString *file = nil;
+	if ([path hasPrefix:@"file:"])
+		file = [[NSURL URLWithString:path] path];
+	else if ([path isAbsolutePath] && [fm fileExistsAtPath:path])
+		file = path;
+	for (NSString *d in dirs) {
+		if (file || !path.length)
+			break;
+		NSString *p = [d stringByAppendingPathComponent:path];
+		if ([fm fileExistsAtPath:p])
+			file = p;
+	}
+	if (!file && path.length)
+		for (NSString *p in help_pages(dirs))
+			if ([[p lastPathComponent] caseInsensitiveCompare:[path lastPathComponent]] == NSOrderedSame) {
+				file = p;
+				break;
+			}
+	if (!file && anchor.length)
+		file = help_find_anchor(dirs, anchor);
+	if (!file)
+		file = help_toc(book, dirs);
+	return help_open(file, anchor) ? 0 : -50;
+}
+
+// AHLookupAnchor(book, anchor)
+int xl_help_anchor(NSString *book, NSString *anchor)
+{
+	NSArray *dirs = help_dirs(&book);
+	NSString *file = anchor.length ? help_find_anchor(dirs, anchor) : nil;
+	return help_open(file ?: help_toc(book, dirs), file ? anchor : nil) ? 0 : -50;
+}
+
+static void xl_app_showHelp(id self, SEL _cmd, id sender)
+{
+	xl_help_goto(nil, nil, nil);
+}
+
+static void xl_help_openAnchor(id self, SEL _cmd, NSString *anchor, NSString *book)
+{
+	xl_help_anchor(book, anchor);
+}
+
+int xl_help_in_browser = -1;   // Help Viewer missing (set at launch)
+
+static void help_viewer_gone(void)
+{
+	// Tips took over Help Viewer's identifier but shows these books blank
+	NSURL *hv = [[NSWorkspace sharedWorkspace] URLForApplicationWithBundleIdentifier:@"com.apple.helpviewer"];
+	xl_help_in_browser = getenv("XL_HELP_BROWSER") ? atoi(getenv("XL_HELP_BROWSER"))
+		: ![[hv lastPathComponent] isEqualToString:@"HelpViewer.app"];
+	if (!xl_help_in_browser)
+		return;
+	method_setImplementation(class_getInstanceMethod([NSApplication class], @selector(showHelp:)), (IMP)xl_app_showHelp);
+	method_setImplementation(class_getInstanceMethod([NSHelpManager class], @selector(openHelpAnchor:inBook:)),
+		(IMP)xl_help_openAnchor);
+}
+
 void xl_appkit_hooks(void)
 {
+	help_viewer_gone();
+	clipping_old_boxes();
+	translated_bundles();
+	fitting_home_layout();
 	stable_line_fragments("HSExtendedTextContainer");
 	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
 		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");

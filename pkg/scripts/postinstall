@@ -1,0 +1,46 @@
+#!/bin/sh
+# Runs after "2013 World Book" has been installed in /Applications. Copies the
+# encyclopedia's content (2013CDs/CD1 and CD2, about 4.3 GB) from the World Book
+# DVD image into the app, as MacKiev's full install did, so the app does not ask
+# for the disc. Then re-signs the app ad hoc, since its contents changed.
+#   $1 = this package's path, $3 = target volume root
+APP="$3/Applications/2013 World Book/2013 World Book.app"
+RES="$APP/Contents/Resources"
+
+log() { /usr/bin/logger -p install.info "2013 World Book: $*"; }
+
+# the disc: the volume this package was opened from, else the mounted DVD image
+DVD=""
+for d in "$(dirname "$1")" "/Volumes/World Book DVD"; do
+	if [ -d "$d/2013CDs/CD1/INFO_DAT" ]; then
+		DVD="$d"
+		break
+	fi
+done
+
+if [ ! -d "$APP" ]; then
+	log "no app at $APP"
+	exit 0
+fi
+
+if [ -n "$DVD" ]; then
+	for cd in CD1 CD2; do
+		rm -rf "$RES/$cd"
+		# without the disc's Finder info, which codesign refuses to seal
+		if ! /usr/bin/ditto --norsrc --noextattr --noqtn "$DVD/2013CDs/$cd" "$RES/$cd"; then
+			log "copying $cd from $DVD failed; the app will ask for the disc"
+			rm -rf "$RES/$cd"
+		fi
+	done
+	chmod -R a+rX "$RES/CD1" "$RES/CD2" 2>/dev/null
+	/usr/bin/xattr -cr "$RES/CD1" "$RES/CD2" 2>/dev/null
+else
+	log "World Book DVD not found; the app will ask for the disc"
+fi
+
+if OUT=$(/usr/bin/codesign --force --sign - "$APP" 2>&1); then
+	log "installed"
+else
+	log "codesign failed: $OUT"
+fi
+exit 0

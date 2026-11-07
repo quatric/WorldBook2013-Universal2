@@ -189,7 +189,11 @@ static void Run(NSString *aLine)
 				break;
 		Log(@"click %@: %@", arg, done ? @"ok" : @"NOT FOUND");
 	} else if ([cmd isEqualToString:@"menu"]) {
-		Log(@"menu %@: %@", arg, MenuIn([NSApp mainMenu], arg) ? @"ok" : @"NOT FOUND");
+		BOOL found = MenuIn([NSApp mainMenu], arg);
+		Log(@"menu %@: %@", arg, found ? @"ok" : @"NOT FOUND");
+		if (!found)   // the titles there are, for the next try
+			for (NSMenuItem *top in [[NSApp mainMenu] itemArray])
+				Log(@"  menu %@: %@", [top title], [[[top submenu] itemArray] valueForKey:@"title"]);
 	} else if ([cmd isEqualToString:@"type"]) {
 		// the app is not activated (that would take the user's keyboard), so
 		// there may be no key window: the window of the last click stands in
@@ -352,7 +356,7 @@ static void Run(NSString *aLine)
 			[todo removeLastObject];
 			if ([v isKindOfClass:[NSBox class]]) {
 				NSBox *b = (NSBox *)v;
-				Log(@"box %p title '%@' position %ld type %ld border %ld titleRect %@", b, [b title], (long)[b titlePosition],
+				Log(@"box %p frame %@ title '%@' position %ld type %ld border %ld titleRect %@", b, NSStringFromRect([b frame]), [b title], (long)[b titlePosition],
 					(long)[b boxType], (long)[b borderType], NSStringFromRect([b titleRect]));
 			}
 			[todo addObjectsFromArray:[v subviews]];
@@ -363,6 +367,16 @@ static void Run(NSString *aLine)
 			for (NSToolbarItem *it in [[w toolbar] items])
 				Log(@"toolbar %@ '%@' enabled %d action %@ target %@ view %@ first responder %@ key %d", [it itemIdentifier], [it label],
 					[it isEnabled], NSStringFromSelector([it action]), [it target], [[it view] class], [w firstResponder], [w isKeyWindow]);
+	} else if ([cmd isEqualToString:@"tbclick"]) {
+		// tbclick <label>: performs the toolbar item with that label (key window first)
+		BOOL found = NO;
+		for (NSWindow *w in Windows())
+			for (NSToolbarItem *it in [[w toolbar] items])
+				if (!found && [[it label] isEqualToString:arg]) {
+					found = YES;
+					[NSApp sendAction:[it action] to:[it target] from:it];
+				}
+		Log(@"tbclick %@: %@", arg, found ? @"ok" : @"not found");
 	} else if ([cmd isEqualToString:@"ftrace"]) {
 		// logs every translated function entered from here on (1) or stops (0)
 		int *v = dlsym(RTLD_DEFAULT, "xl_trace_on");
@@ -403,7 +417,7 @@ static void Run(NSString *aLine)
 			Log(@"wshot: no window");
 	} else if ([cmd isEqualToString:@"windows"]) {
 		for (NSWindow *w in Windows())
-			Log(@"window %@ %@ \"%@\"%@ #%ld", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"", (long)[w windowNumber]);
+			Log(@"window %@ %@ \"%@\"%@ #%ld style %lx content %@", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"", (long)[w windowNumber], (unsigned long)[w styleMask], NSStringFromRect([[w contentView] frame]));
 	}
 	Next();
 }

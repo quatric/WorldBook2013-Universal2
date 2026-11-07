@@ -1,3 +1,4 @@
+#include <execinfo.h>
 // The 4 GB guest window, the guest heap and handles for host pointers.
 #import <Foundation/Foundation.h>
 #include "rt.h"
@@ -484,7 +485,16 @@ void *xl_p(uint32_t h)
 	if (h >= XL_HEAP_LO && h < XL_HEAP_HI)
 		return *(void **)GP(h - 8);
 	void *p = (void *)xl_map_get(&h2p, h);
-	if (!p && xl_verbose >= 0)
+	if (!p && xl_verbose >= 0) {
 		xl_log("unknown handle %08x (%s)", h, xl_name_at(h));
+		static int traces = -1;
+		if (traces < 0)
+			traces = getenv("XL_HANDLE_TRACE") ? atoi(getenv("XL_HANDLE_TRACE")) : 0;
+		if (traces > 0) {   // XL_HANDLE_TRACE=n: host backtraces of the first n
+			traces--;
+			void *bt[24];
+			backtrace_symbols_fd(bt, backtrace(bt, 24), 2);
+		}
+	}
 	return p;
 }

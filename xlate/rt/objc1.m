@@ -313,10 +313,20 @@ static int enc_split(const char *enc, XLType **out, int max)
 	return n;
 }
 
+// SDK signatures that say void * for what is a CF object: a CGContextRef
+// crosses as an object handle, not as a pointer into the guest window
+static const XLMethodType sdk_fixes[] = {
+	{"graphicsPort", "NSGraphicsContext", "-@", 0},
+	{"graphicsContextWithGraphicsPort:flipped:", "NSGraphicsContext", "+@|@|B", 0},
+};
+
 // the SDK signature for a selector, preferring entries declared on cls or its protocols
 const XLMethodType *xl_sdk_method(SEL sel, Class cls, int meta)
 {
 	const char *nm = sel_getName(sel);
+	for (size_t i = 0; i < sizeof sdk_fixes / sizeof *sdk_fixes; i++)
+		if (!strcmp(sdk_fixes[i].sel, nm) && sdk_fixes[i].type[0] == (meta ? '+' : '-'))
+			return &sdk_fixes[i];
 	size_t lo = 0, hi = xl_sdk_nmethods;
 	while (lo < hi) {
 		size_t mid = (lo + hi) / 2;
@@ -862,7 +872,10 @@ static NSBundle *xl_bundleForClass(id self, SEL _cmd, Class cls)
 		if (!b) {
 			NSString *exe = [[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent];
 			NSString *p = [[exe stringByAppendingPathComponent:[inst substringFromIndex:17]] stringByStandardizingPath];
-			while (p.length > 1 && ![[p pathExtension] isEqualToString:@"framework"])
+			static NSSet *bundle_exts;
+			if (!bundle_exts)
+				bundle_exts = [[NSSet alloc] initWithObjects:@"framework", @"prefPane", @"plugin", @"bundle", nil];
+			while (p.length > 1 && ![bundle_exts containsObject:[p pathExtension]])
 				p = [p stringByDeletingLastPathComponent];
 			b = p.length > 1 ? [NSBundle bundleWithPath:p] : nil;
 			if (!b)
@@ -925,8 +938,24 @@ static void build_class(GClass *g)
 		}
 	}
 	Class cls = objc_allocateClassPair(sup, g->name, 0);
-	if (!cls)
-		xl_die("cannot create class %s", g->name);
+	if (!cls) {
+		// a second image (a preference pane, say) defines a class the app
+		// already has: like dyld, keep the first and point this one at it
+		Class first = objc_getClass(g->name);
+		GClass *fg = first ? (GClass *)xl_map_get(&ginfo, (uint64_t)first) : NULL;
+		if (!fg)
+			xl_die("cannot create class %s", g->name);
+		xl_log("class %s defined twice, using the first", g->name);
+		g->host = fg->host;
+		g->hmeta = fg->hmeta;
+		g->isize = fg->isize;
+		xl_bind_handle(a, fg->host);
+		xl_bind_handle(meta, fg->hmeta);
+		*(uint32_t *)GP(a + 4) = suph;
+		*(uint32_t *)GP(meta + 4) = supmeta;
+		*(uint32_t *)GP(meta) = *(uint32_t *)GP(*(uint32_t *)GP(fg->addr));   // the root metaclass
+		return;
+	}
 	g->host = cls;
 	g->hmeta = object_getClass((id)cls);
 	g->isize = *(uint32_t *)GP(a + 20);

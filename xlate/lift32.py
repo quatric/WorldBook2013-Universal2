@@ -76,6 +76,23 @@ class Image:
         self.names = m.names
         self.rebases = m.rebases
         self.starts = {a for a, n in m.names.items() if self.in_text(a)}
+        # a stripped executable (What's New?) names nothing: start from the entry
+        # point and from the Objective-C methods in its method lists
+        if m.entry and self.in_text(m.entry):
+            self.starts.add(m.entry)
+            self.names.setdefault(m.entry, 'start')
+        for sect in ('__inst_meth', '__cls_meth', '__cat_inst_meth', '__cat_cls_meth'):
+            s = m.section('__OBJC', sect) if len(self.starts) <= 1 else None
+            a = s.addr if s else 0
+            while s and a + 8 <= s.addr + s.size:
+                count = m.u32(a + 4)
+                if count > 10000 or a + 8 + 12 * count > s.addr + s.size:
+                    break
+                for k in range(count):
+                    imp = m.u32(a + 8 + 12 * k + 8)
+                    if self.in_text(imp):
+                        self.starts.add(imp)
+                a += 8 + 12 * count
         # code locations whose 4 bytes are slid at load (text relocations)
         self.text_rebases = {r for r in m.rebases if self.in_text(r)}
 
@@ -1077,7 +1094,7 @@ def main():
     t.append('extern const unsigned char xl_blob_%s[];' % ident)
     t.append('XLImage xl_image_%s = {"%s", "%s", 0x%x, 0x%x, xl_blob_%s, rebases, %d, binds, %d, stubs, %d, exports, %d, '
              'funcs, %d, xl_imports_%s, %d, sections, dylibs, &xl_slide_%s, 0x%x, 0x%x};'
-             % (ident, ident, getattr(m, 'install_name', ''), img.lo, img.hi - img.lo, ident, len(img.rebases), len(binds),
+             % (ident, ident, getattr(m, 'install_name', '') or os.environ.get('XL_INSTALL_NAME', ''), img.lo, img.hi - img.lo, ident, len(img.rebases), len(binds),
                 len(m.stubs), len(m.exports), len(order), ident, len(imports), ident, m.entry or 0, m.init_routine or 0))
     t.append('__attribute__((constructor)) static void load_%s(void) { xl_register_image(&xl_image_%s); }' % (ident, ident))
     open(os.path.join(outdir, 'image.c'), 'w').write('\n'.join(t) + '\n')

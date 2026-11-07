@@ -12,6 +12,27 @@ static uint32_t find_func(XLImage *im, const char *name)
 	return 0;
 }
 
+// A stripped executable (What's New?) has no _main symbol. Its crt1 start
+// routine at the entry point ends with "call main; movl %eax,(%esp); call exit".
+static uint32_t main_from_start(XLImage *im)
+{
+	if (!im->entry)
+		return 0;
+	uint32_t a = im->entry + *im->slide;
+	const uint8_t *p = GP(a);
+	for (uint32_t i = 0; i + 13 <= 0x200; i++) {
+		if (p[i] != 0xe8 || p[i + 5] != 0x89 || p[i + 6] != 0x04 || p[i + 7] != 0x24 || p[i + 8] != 0xe8)
+			continue;
+		int32_t rel;
+		memcpy(&rel, p + i + 1, 4);
+		uint32_t t = a + i + 5 + (uint32_t)rel;
+		for (size_t k = 0; k < im->nfuncs; k++)
+			if (im->funcs[k].addr + *im->slide == t)
+				return t;
+	}
+	return 0;
+}
+
 static uint32_t guest_strv(int n, char **v)
 {
 	uint32_t a = xl_calloc(4 * (n + 1));
@@ -38,6 +59,8 @@ int main(int argc, char **argv, char **envp)
 		if (!im->install[0])
 			exe = im;
 	uint32_t m = exe ? find_func(exe, "_main") : 0;
+	if (!m && exe)
+		m = main_from_start(exe);
 	if (!m)
 		xl_die("no _main in the executable");
 	int envc = 0;

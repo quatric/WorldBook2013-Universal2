@@ -84,3 +84,68 @@ SoundConverter, atom containers, time bases), QTKit `QTMovie`,
 `NSMovie(View)`, a few private CGS calls, `FSp*`/`PBGetCatInfoSync`, libgcc
 64-bit arithmetic helpers, 12 libstdc++ symbols. These get shims in the
 runtime (QuickTime over AVFoundation/CoreGraphics).
+
+## Universal 2
+
+The translated C does not depend on the host architecture, so every app is
+compiled for arm64 and x86_64 and the two are merged with `lipo`
+(`xlate/arch.sh`). The one difference the runtime handles: a `%Lf` in a
+printf-style format is passed as `long double`, which is the x87 type on
+x86_64 and `double` on arm64.
+
+## Home screen
+
+- `NSGraphicsContext -graphicsPort` is declared `void *`, but it is a
+  `CGContextRef`: overridden by SMKGLKit's `GLBitmapGraphicsContext`, its
+  result has to cross as an object handle, not as a pointer into the guest
+  window, or AppKit draws into nothing (`sdk_fixes` in `objc1.m`). The icon
+  titles and the media frames are drawn through it into OpenGL textures.
+- The home screen is a window the size of a layout less 22 points (2013's
+  menu bar). `-[LayoutController loadBestLayoutForScreen:]` picks the largest
+  layout that fits `-[NSScreen frame]`; while it does, the screen reports its
+  visible area plus 22 points, and the window is then kept inside the visible
+  area, so today's taller menu bar and the Dock do not cut it off
+  (`appkit.m`).
+- On the screen with the menu bar (and with OpenGL) the window has a title
+  bar drawn over the layout's top 22 points, which the artwork leaves for it.
+  Today's title bar is taller, so it is made transparent over the layout:
+  nothing is covered.
+
+## Bundles the apps load
+
+World Book's eight preference panes and both apps' dictionary searchers are
+i386 bundles loaded with `NSBundle`. They are translated with the app that
+loads them (`xlate/images.txt`; `xlate/app.sh` picks up `Contents/PlugIns`),
+under their path in the bundle as install name. Their classes are registered
+at launch, so `-[NSBundle load]` of such a bundle only says yes, and
+`-principalClass` / `-classNamed:` answer with the translated classes;
+`+bundleForClass:` gives the bundle a class came from, for its resources. A
+class defined both by the app and a pane (`WBDTextColoringPreviewView`) is
+kept once, the first, as dyld did.
+
+## Old habits
+
+- `performSelector:withObject:` is often handed an integer in disguise (the
+  dictionary's index arrays pass an entry number, nibs a BOOL). Calls of a
+  translated method pass the guest's words through unchanged; a host method
+  gets them converted by its own signature, not as objects.
+- A few nibs are typedstream nibs from before keyed archiving. Their
+  separator lines are boxes a couple of points tall with the default title
+  ("Box") still set, which older AppKit clipped away; views no longer clip to
+  their bounds (macOS 14), so such boxes lose a title they cannot show.
+  Borderless boxes that only group views keep Interface Builder's placeholder
+  title ("Title", "Box") too, which AppKit of the time did not show (the
+  Distance Calculator's location panels); the placeholder is emptied, so the
+  content stays where the nib put it.
+
+## Help
+
+Help Viewer is gone from macOS 27: `com.apple.helpviewer` is now Tips, which
+opens the old HTML help books blank. Where Help Viewer is missing, the
+runtime answers Apple Help itself (`AHRegisterHelpBook`, `AHGotoPage`,
+`AHLookupAnchor`, `-[NSApplication showHelp:]`,
+`-[NSHelpManager openHelpAnchor:inBook:]`): a book is found by its
+`CFBundleHelpBookName` in the registered bundles, and the page (or the page
+holding the anchor, or the book's table of contents) opens in the default
+browser. What's New? is such a call and nothing else. `XL_HELP_BROWSER=0/1`
+forces either way; `XL_HELP_DRYRUN=1` logs the page instead of opening it.

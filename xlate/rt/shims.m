@@ -4,6 +4,7 @@
 #import <OpenGL/gl.h>
 #import <OpenGL/glext.h>
 #import <CoreServices/CoreServices.h>
+#import <Carbon/Carbon.h>
 #include "rt.h"
 #import <OpenGL/OpenGL.h>
 #include <dlfcn.h>
@@ -759,6 +760,48 @@ static void sh_FSFindFolder(XLCPU *c)
 	xl_ret(c, (uint32_t)(int32_t)r);
 }
 
+// Apple Help: pages open in the browser when Help Viewer is gone (appkit.m)
+extern int xl_help_in_browser;
+void xl_help_register(NSURL *url);
+int xl_help_goto(NSString *book, NSString *path, NSString *anchor);
+int xl_help_anchor(NSString *book, NSString *anchor);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static void sh_AHRegisterHelpBook(XLCPU *c)
+{
+	const FSRef *ref = A(0) ? (const FSRef *)GP(A(0)) : NULL;
+	CFURLRef u = ref ? CFURLCreateFromFSRef(NULL, ref) : NULL;
+	if (u)
+		xl_help_register((__bridge NSURL *)u);
+	OSStatus r = xl_help_in_browser || !ref ? (u ? 0 : paramErr) : AHRegisterHelpBook(ref);
+	if (u)
+		CFRelease(u);
+	xl_ret(c, (uint32_t)r);
+}
+#pragma clang diagnostic pop
+static void sh_AHRegisterHelpBookWithURL(XLCPU *c)
+{
+	NSURL *u = XL_ID(A(0));
+	xl_help_register(u);
+	xl_ret(c, (uint32_t)(xl_help_in_browser ? 0 : AHRegisterHelpBookWithURL((__bridge CFURLRef)u)));
+}
+static void sh_AHGotoPage(XLCPU *c)
+{
+	NSString *book = XL_ID(A(0)), *path = XL_ID(A(1)), *anchor = XL_ID(A(2));
+	xl_ret(c, (uint32_t)(xl_help_in_browser ? xl_help_goto(book, path, anchor)
+		: AHGotoPage((__bridge CFStringRef)book, (__bridge CFStringRef)path, (__bridge CFStringRef)anchor)));
+}
+static void sh_AHLookupAnchor(XLCPU *c)
+{
+	NSString *book = XL_ID(A(0)), *anchor = XL_ID(A(1));
+	xl_ret(c, (uint32_t)(xl_help_in_browser ? xl_help_anchor(book, anchor)
+		: AHLookupAnchor((__bridge CFStringRef)book, (__bridge CFStringRef)anchor)));
+}
+static void sh_AHGotoMainTOC(XLCPU *c)
+{
+	xl_ret(c, (uint32_t)(xl_help_in_browser ? xl_help_goto(nil, nil, nil) : AHGotoMainTOC((AHTOCType)A(0))));
+}
+
 // CFStringGetCharactersPtr: strings made over guest buffers (external characters)
 // hand back that buffer; any other string has no guest-visible pointer
 static void sh_CFStringGetCharactersPtr(XLCPU *c)
@@ -994,6 +1037,8 @@ static const ShimEnt shims[] = {
 	{"_CFAllocatorCreate", sh_CFAllocatorCreate}, {"_CFAllocatorAllocate", sh_CFAllocatorAllocate},
 	{"_CFAllocatorReallocate", sh_CFAllocatorReallocate}, {"_CFAllocatorDeallocate", sh_CFAllocatorDeallocate}, {"_CFStringGetCharactersPtr", sh_CFStringGetCharactersPtr},
 	{"_glGetString", sh_glGetString}, {"_FSFindFolder", sh_FSFindFolder},
+	{"_AHRegisterHelpBook", sh_AHRegisterHelpBook}, {"_AHRegisterHelpBookWithURL", sh_AHRegisterHelpBookWithURL},
+	{"_AHGotoPage", sh_AHGotoPage}, {"_AHLookupAnchor", sh_AHLookupAnchor}, {"_AHGotoMainTOC", sh_AHGotoMainTOC},
 	{"_CGDisplayCapture", sh_ok}, {"_CGDisplayRelease", sh_ok}, {"_CGCaptureAllDisplays", sh_ok},
 	{"_CGReleaseAllDisplays", sh_ok}, {"_CGDisplaySwitchToMode", sh_ok}, {"_CGSetDisplayTransferByFormula", sh_ok},
 	{"_CGSetDisplayTransferByTable", sh_ok}, {"_CGDisplayRestoreColorSyncSettings", sh_ok}, {"_SetSystemUIMode", sh_ok},

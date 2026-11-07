@@ -1,34 +1,26 @@
 #!/bin/sh
-# Compile the lifted images and the runtime, link the arm64 executable.
+# Compile the lifted images and the runtime for each architecture in $ARCHS
+# (default: arm64 x86_64), link, and merge into the Universal 2 build/WorldBook.
 # Usage: xlate/build.sh [lift]   (lift: re-run the lifter first)
 set -e
 cd "$(dirname "$0")/.."
-PY=${PY:-python3}   # needs capstone
-CC="clang -arch arm64 -mmacosx-version-min=11.0"
+PY=${PY:-$([ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)}   # needs capstone (requirements.txt)
+ARCHS=${ARCHS:-"arm64 x86_64"}
+. xlate/arch.sh
 if [ "$1" = lift ]; then
 	grep -v '^#' xlate/images.txt | while read f id inst; do
-		[ -n "$f" ] && $PY -I xlate/lift32.py analysis/$f $id build/x/$id analysis/*-i386
+		# bundles (plug-ins, preference panes) have no install name of their own
+		[ -n "$f" ] && XL_INSTALL_NAME=$([ "$inst" = exe ] || echo "$inst") $PY -I xlate/lift32.py analysis/$f $id build/x/$id analysis/*-i386
 	done
 fi
-# generated code: compile files whose object is older than the source or the headers
-find build/x -name '*.c' | while read c; do
-	o=$c.o
-	if [ ! -f $o ] || [ $c -nt $o ] || [ xlate/rt/xlcode.h -nt $o ] || [ xlate/rt/xl.h -nt $o ]; then echo $c; fi
-done | xargs -P 10 -I{} sh -c "$CC -O1 -w -fno-strict-aliasing -Ixlate/rt -c {} -o {}.o"
-for d in build/x/*; do
-	[ -f $d/blob.S.o ] && [ $d/blob.S.o -nt $d/image.bin ] || $CC -c $d/blob.S -o $d/blob.S.o
+for ARCH in $ARCHS; do
+	CC="clang -arch $ARCH -mmacosx-version-min=11.0"
+	compile_lifted build/x xlate/rt xlate/rt/xlcode.h xlate/rt/xl.h
+	for d in build/x/*; do
+		[ -f $d/blob.S.$ARCH.o ] && [ $d/blob.S.$ARCH.o -nt $d/image.bin ] || $CC -c $d/blob.S -o $d/blob.S.$ARCH.o
+	done
+	compile_rt xlate/rt build/rt/$ARCH
+	$CC -o build/WorldBook.$ARCH build/rt/$ARCH/*.o build/x/*/*.$ARCH.o -lffi $XL_LIBS -Wl,-w
 done
-mkdir -p build/rt
-for f in xlate/rt/*.m xlate/rt/*.c; do
-	o=build/rt/$(basename $f).o
-	if [ ! -f $o ] || [ $f -nt $o ] || [ -n "$(find xlate/rt -name '*.h' -newer $o)" ]; then
-		$CC -O1 -g -w -fno-objc-arc -fno-strict-aliasing -Ixlate/rt -c $f -o $o
-	fi
-done
-$CC -o build/WorldBook build/rt/*.o build/x/*/*.o -lffi \
-	-framework AppKit -framework Foundation -framework Carbon -framework OpenGL -framework WebKit \
-	-framework AudioToolbox -framework AVFoundation -framework AudioUnit -framework CoreAudio -framework Security \
-	-framework SystemConfiguration -framework IOKit -framework ApplicationServices -framework Accelerate \
-	-framework CoreServices -framework QuartzCore -framework ImageIO -lsqlite3 -lz \
-	-Wl,-w
-echo built build/WorldBook
+merge build/WorldBook
+echo built build/WorldBook: $(lipo -archs build/WorldBook)

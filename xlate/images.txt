@@ -12,3 +12,14 @@ SQLiteLib-i386            sql    @executable_path/../Frameworks/SQLiteLib.framew
 WBHomeScreen-i386         home   @executable_path/../Frameworks/WBHomeScreen.framework/Versions/B/WBHomeScreen
 WBMediaProvider-i386      media  @executable_path/../Frameworks/WBMediaProvider.framework/Versions/B/WBMediaProvider
 WebCamsDB_C-i386          cams   @executable_path/../Frameworks/WebCamsDB_C.framework/Versions/A/WebCamsDB_C
+# bundles the app loads (NSBundle): translated with it, answered by xlate/rt/appkit.m
+WBPrefPaneGeneral-i386    pgen   @executable_path/../Resources/PreferencePanes/WBPrefPaneGeneral.prefPane/Contents/MacOS/WBPrefPaneGeneral
+WBPrefPaneAppearance-i386 papp   @executable_path/../Resources/PreferencePanes/WBPrefPaneAppearance.prefPane/Contents/MacOS/WBPrefPaneAppearance
+WBPrefPaneWindow-i386     pwin   @executable_path/../Resources/PreferencePanes/WBPrefPaneWindow.prefPane/Contents/MacOS/WBPrefPaneWindow
+WBPrefPaneDictionary-i386 pdic   @executable_path/../Resources/PreferencePanes/WBPrefPaneDictionary.prefPane/Contents/MacOS/WBPrefPaneDictionary
+WBPrefPaneSharing-i386    pshr   @executable_path/../Resources/PreferencePanes/WBPrefPaneSharing.prefPane/Contents/MacOS/WBPrefPaneSharing
+WBPrefPaneSpecialEffects-i386 psfx   @executable_path/../Resources/PreferencePanes/WBPrefPaneSpecialEffects.prefPane/Contents/MacOS/WBPrefPaneSpecialEffects
+WBPrefPaneSpeech-i386     pspk   @executable_path/../Resources/PreferencePanes/WBPrefPaneSpeech.prefPane/Contents/MacOS/WBPrefPaneSpeech
+WBPrefPaneUpdates-i386    pupd   @executable_path/../Resources/PreferencePanes/WBPrefPaneUpdates.prefPane/Contents/MacOS/WBPrefPaneUpdates
+ContentSearcher-i386      scont  @executable_path/../PlugIns/Dictionary/ContentSearcher.plugin/Contents/MacOS/ContentSearcher
+SpellingSearcher-i386     sspel  @executable_path/../PlugIns/Dictionary/SpellingSearcher.plugin/Contents/MacOS/SpellingSearcher

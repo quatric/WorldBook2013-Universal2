@@ -2,9 +2,11 @@
 # Translate one of the World Book wizards (PowerPC CFM applications) into
 # "build/<name>.app".
 # Usage: xlate/ppc/build.sh <chart|quiz|report|timeline> [lift]
+# Builds every architecture in $ARCHS (default: arm64 x86_64) and merges them.
 set -e
 cd "$(dirname "$0")/../.."
-CC="clang -arch arm64 -mmacosx-version-min=11.0"
+ARCHS=${ARCHS:-"arm64 x86_64"}
+. xlate/arch.sh
 ID=$1
 case "$ID" in
 chart) NAME="Chart Wizard" ;;
@@ -19,29 +21,22 @@ if [ "$2" = lift ] || [ ! -d $OUT/x ]; then
 	mkdir -p $OUT/x
 	python3 -I xlate/ppc/liftppc.py "$SRC" $OUT/x
 fi
-find $OUT/x -name '*.c' | while read c; do
-	o=$c.o
-	if [ ! -f $o ] || [ $c -nt $o ] || [ xlate/ppc/rt/ppccode.h -nt $o ] || [ xlate/ppc/rt/ppc.h -nt $o ]; then echo $c; fi
-done | xargs -P 10 -I{} sh -c "$CC -O1 -w -fno-strict-aliasing -Ixlate/ppc/rt -c {} -o {}.o"
-[ -f $OUT/x/blob.S.o ] && [ $OUT/x/blob.S.o -nt $OUT/x/code.bin ] || $CC -c $OUT/x/blob.S -o $OUT/x/blob.S.o
-mkdir -p build/ppc/rt
-for f in xlate/ppc/rt/*.m xlate/ppc/rt/*.c; do
-	o=build/ppc/rt/$(basename $f).o
-	if [ ! -f $o ] || [ $f -nt $o ] || [ -n "$(find xlate/ppc/rt -name '*.h' -newer $o)" ]; then
-		echo "cc $f"
-		ARC=-fno-objc-arc
-		case $(basename $f) in ae.m|nav.m) ARC=-fobjc-arc ;; esac
-		$CC -O1 -g -Wall -Wno-unused-function -Wno-deprecated-declarations $ARC -fno-strict-aliasing -Ixlate/ppc/rt -c $f -o $o
-	fi
-done
 EXE=$(echo "$NAME" | tr -d ' ')
-$CC -o "$OUT/$EXE" build/ppc/rt/*.o $OUT/x/*.o \
-	-framework AppKit -framework Foundation -framework Carbon -framework CoreText -framework ImageIO \
-	-framework AudioToolbox -framework AVFoundation -framework QuartzCore -framework PDFKit -Wl,-w
+for ARCH in $ARCHS; do
+	CC="clang -arch $ARCH -mmacosx-version-min=11.0"
+	compile_lifted $OUT/x xlate/ppc/rt xlate/ppc/rt/ppccode.h xlate/ppc/rt/ppc.h
+	[ -f $OUT/x/blob.S.$ARCH.o ] && [ $OUT/x/blob.S.$ARCH.o -nt $OUT/x/code.bin ] || $CC -c $OUT/x/blob.S -o $OUT/x/blob.S.$ARCH.o
+	XL_ARC_FILES="ae.m nav.m" compile_rt xlate/ppc/rt build/ppc/rt/$ARCH
+	$CC -o "$OUT/$EXE.$ARCH" build/ppc/rt/$ARCH/*.o $OUT/x/*.$ARCH.o \
+		-framework AppKit -framework Foundation -framework Carbon -framework CoreText -framework ImageIO \
+		-framework AudioToolbox -framework AVFoundation -framework QuartzCore -framework PDFKit -Wl,-w
+done
+merge "$OUT/$EXE"
 
 # the bundle: the translated executable, the original's resource fork, an icon
 APP="build/$NAME.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+rm -f "$APP/Contents/MacOS/$EXE"   # a new file: the kernel caches signatures per file
 cp "$OUT/$EXE" "$APP/Contents/MacOS/$EXE"
 cp "$SRC/..namedfork/rsrc" "$APP/Contents/Resources/Application.rsrc"
 python3 -I xlate/ppc/mkinfo.py "$SRC" "$EXE" "$NAME" "$APP"
