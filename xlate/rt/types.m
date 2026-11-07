@@ -192,8 +192,8 @@ void xl_g2h(XLType *t, uint32_t g, void *h)
 	case 'c': case 'C': case 'B': *(uint8_t *)h = *src; break;
 	case 's': case 'S': memcpy(h, src, 2); break;
 	case 'i': case 'I': case 'f': memcpy(h, src, 4); break;
-	case 'l': { int32_t v; memcpy(&v, src, 4); *(int64_t *)h = v; break; }
-	case 'L': { uint32_t v; memcpy(&v, src, 4); *(uint64_t *)h = v; break; }
+	case 'l': { uint32_t v; memcpy(&v, src, 4); *(int64_t *)h = xl_slong_in(v); break; }
+	case 'L': { uint32_t v; memcpy(&v, src, 4); *(uint64_t *)h = xl_ulong_in(v); break; }
 	case 'q': case 'Q': case 'd': memcpy(h, src, 8); break;
 	case 'F': { float v; memcpy(&v, src, 4); *(double *)h = v; break; }
 	case '@': case 'p': case 'h': { uint32_t v; memcpy(&v, src, 4); *(void **)h = xl_p(v); break; }
@@ -225,7 +225,7 @@ void xl_h2g(XLType *t, const void *h, uint32_t g)
 	case 'c': case 'C': case 'B': *dst = *(const uint8_t *)h; break;
 	case 's': case 'S': memcpy(dst, h, 2); break;
 	case 'i': case 'I': case 'f': memcpy(dst, h, 4); break;
-	case 'l': case 'L': { uint32_t v = (uint32_t)*(const uint64_t *)h; memcpy(dst, &v, 4); break; }
+	case 'l': case 'L': { uint32_t v = xl_long_out(*(const uint64_t *)h); memcpy(dst, &v, 4); break; }
 	case 'q': case 'Q': case 'd': memcpy(dst, h, 8); break;
 	case 'F': { float v = (float)*(const double *)h; memcpy(dst, &v, 4); break; }
 	case '@': { uint32_t v = xl_hobj(*(id const *)h); memcpy(dst, &v, 4); break; }

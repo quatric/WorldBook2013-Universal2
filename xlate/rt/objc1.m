@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import <objc/message.h>
 #include "rt.h"
+#include <ctype.h>
 #include <ffi/ffi.h>
 
 // ---- selectors ---------------------------------------------------------------------
@@ -98,6 +99,8 @@ static char assoc_key;
 @implementation XLShadowOwner
 - (void)dealloc
 {
+	if (xl_verbose > 1)
+		xl_log("shadow %08x freed (%s)", h, obj ? class_getName(object_getClass((id)obj)) : "?");
 	xl_map_del(&p2h_obj, (uint64_t)obj);
 	xl_free(h - 8);
 	[super dealloc];
@@ -659,6 +662,159 @@ static id xl_allocWithZone(id self, SEL _cmd, NSZone *zone)
 	return o;
 }
 
+// ---- KVC on guest instance variables ------------------------------------------------------
+// Translated classes have no host ivars (their ivars live in the i386 shadow
+// block), so nib outlets and KVC keys without accessors end up in the
+// undefined-key methods; these look the key up in the guest ivar lists.
+// objc1 class: isa super name version info instance_size ivars methods cache protocols
+static int guest_ivar(id self, NSString *key, uint32_t *off, const char **type)
+{
+	const char *k = [key UTF8String];
+	char alt[3][256];
+	snprintf(alt[0], sizeof alt[0], "_%s", k);
+	snprintf(alt[1], sizeof alt[1], "is%c%s", toupper((unsigned char)k[0]), k[0] ? k + 1 : "");
+	snprintf(alt[2], sizeof alt[2], "_is%c%s", toupper((unsigned char)k[0]), k[0] ? k + 1 : "");
+	const char *names[4] = {k, alt[0], alt[1], alt[2]};
+	for (int pass = 0; pass < 4; pass++)
+		for (Class c = object_getClass(self); c && xl_is_guest_class(c); c = class_getSuperclass(c)) {
+			GClass *g = (GClass *)xl_map_get(&ginfo, (uint64_t)c);
+			uint32_t il = *(uint32_t *)GP(g->addr + 24);
+			if (!il)
+				continue;
+			int32_t n = *(int32_t *)GP(il);
+			for (int32_t i = 0; i < n && i < 4096; i++) {
+				uint32_t e = il + 4 + 12 * i;
+				uint32_t nm = *(uint32_t *)GP(e);
+				if (nm && !strcmp((const char *)GP(nm), names[pass])) {
+					uint32_t ty = *(uint32_t *)GP(e + 4);
+					*type = ty ? (const char *)GP(ty) : "@";
+					*off = *(uint32_t *)GP(e + 8);
+					return 1;
+				}
+			}
+		}
+	return 0;
+}
+
+static void xl_setValueForUndefinedKey(id self, SEL _cmd, id value, NSString *key)
+{
+	uint32_t off;
+	const char *t;
+	int found = guest_ivar(self, key, &off, &t);
+	if (xl_verbose > 1)
+		xl_log("KVC set %s.%s = %s (%s)", class_getName(object_getClass(self)), [key UTF8String],
+			value ? class_getName(object_getClass(value)) : "nil", found ? t : "no guest ivar");
+	if (!found) {
+		Class n = object_getClass(self);
+		while (n && xl_is_guest_class(n))
+			n = class_getSuperclass(n);
+		IMP imp = class_getMethodImplementation(n, _cmd);
+		((void (*)(id, SEL, id, NSString *))imp)(self, _cmd, value, key);
+		return;
+	}
+	uint8_t *p = GP(xl_hobj(self) + off);
+	switch (*t) {
+	case '@': case '#': *(uint32_t *)p = xl_hobj(value); break;    // outlets are not retained
+	case 'c': case 'C': case 'B': *p = [value charValue]; break;
+	case 's': case 'S': *(int16_t *)p = [value shortValue]; break;
+	case 'i': case 'I': case 'l': case 'L': *(int32_t *)p = [value intValue]; break;
+	case 'f': *(float *)p = [value floatValue]; break;
+	case 'd': *(double *)p = [value doubleValue]; break;
+	case 'q': case 'Q': *(int64_t *)p = [value longLongValue]; break;
+	default: xl_log("KVC set of %s (type %s) on %s not supported", [key UTF8String], t, class_getName(object_getClass(self)));
+	}
+}
+
+static id xl_valueForUndefinedKey(id self, SEL _cmd, NSString *key)
+{
+	uint32_t off;
+	const char *t;
+	if (!guest_ivar(self, key, &off, &t)) {
+		Class n = object_getClass(self);
+		while (n && xl_is_guest_class(n))
+			n = class_getSuperclass(n);
+		IMP imp = class_getMethodImplementation(n, _cmd);
+		return ((id (*)(id, SEL, NSString *))imp)(self, _cmd, key);
+	}
+	uint8_t *p = GP(xl_hobj(self) + off);
+	switch (*t) {
+	case '@': case '#': return XL_ID(*(uint32_t *)p);
+	case 'c': return [NSNumber numberWithChar:*(int8_t *)p];
+	case 'C': case 'B': return [NSNumber numberWithUnsignedChar:*p];
+	case 's': return [NSNumber numberWithShort:*(int16_t *)p];
+	case 'S': return [NSNumber numberWithUnsignedShort:*(uint16_t *)p];
+	case 'i': case 'l': return [NSNumber numberWithInt:*(int32_t *)p];
+	case 'I': case 'L': return [NSNumber numberWithUnsignedInt:*(uint32_t *)p];
+	case 'f': return [NSNumber numberWithFloat:*(float *)p];
+	case 'd': return [NSNumber numberWithDouble:*(double *)p];
+	case 'q': return [NSNumber numberWithLongLong:*(int64_t *)p];
+	case 'Q': return [NSNumber numberWithUnsignedLongLong:*(uint64_t *)p];
+	}
+	return nil;
+}
+
+// nib outlets of translated owners: a setter if the class has one (KVC), else the guest ivar
+static IMP orig_establish;
+static void xl_establishConnection(id self, SEL _cmd)
+{
+	id src = [self valueForKey:@"source"];
+	if (src && xl_is_guest_class(object_getClass(src))) {
+		NSString *label = [self valueForKey:@"label"];
+		id dst = [self valueForKey:@"destination"];
+		uint32_t off;
+		const char *t;
+		NSString *setter = [NSString stringWithFormat:@"set%@%@:", [[label substringToIndex:1] uppercaseString],
+			[label substringFromIndex:1]];
+		if (label.length && ![src respondsToSelector:NSSelectorFromString(setter)] && guest_ivar(src, label, &off, &t)) {
+			if (xl_verbose > 1)
+				xl_log("outlet %s.%s = %s", class_getName(object_getClass(src)), [label UTF8String],
+					dst ? class_getName(object_getClass(dst)) : "nil");
+			*(uint32_t *)GP(xl_hobj(src) + off) = xl_hobj(dst);
+			return;
+		}
+	}
+	((void (*)(id, SEL))orig_establish)(self, _cmd);
+}
+
+// +[NSBundle bundleForClass:] of a translated class: the framework bundle of
+// the image that defines it (from its install name), else the main bundle
+static IMP orig_bundleForClass;
+static NSBundle *xl_bundleForClass(id self, SEL _cmd, Class cls)
+{
+	GClass *g = cls ? (GClass *)xl_map_get(&ginfo, (uint64_t)cls) : NULL;
+	if (g && g->img && g->img->install && !strncmp(g->img->install, "@executable_path/", 17)) {
+		static NSMutableDictionary *cache;
+		if (!cache)
+			cache = [NSMutableDictionary new];
+		NSString *inst = [NSString stringWithUTF8String:g->img->install];
+		NSBundle *b = cache[inst];
+		if (!b) {
+			NSString *exe = [[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent];
+			NSString *p = [[exe stringByAppendingPathComponent:[inst substringFromIndex:17]] stringByStandardizingPath];
+			while (p.length > 1 && ![[p pathExtension] isEqualToString:@"framework"])
+				p = [p stringByDeletingLastPathComponent];
+			b = p.length > 1 ? [NSBundle bundleWithPath:p] : nil;
+			if (!b)
+				b = [NSBundle mainBundle];
+			cache[inst] = b;
+		}
+		return b;
+	}
+	return ((NSBundle *(*)(id, SEL, Class))orig_bundleForClass)(self, _cmd, cls);
+}
+
+static void hook_outlets(void)
+{
+	Class k = objc_getClass("NSNibOutletConnector");
+	Method m = k ? class_getInstanceMethod(k, @selector(establishConnection)) : NULL;
+	if (m)
+		orig_establish = method_setImplementation(m, (IMP)xl_establishConnection);
+	else
+		xl_log("NSNibOutletConnector not found: outlets of translated classes stay unset");
+	Method bm = class_getClassMethod([NSBundle class], @selector(bundleForClass:));
+	orig_bundleForClass = method_setImplementation(bm, (IMP)xl_bundleForClass);
+}
+
 static Class native_class(const char *nm)
 {
 	Class c = objc_getClass(nm);
@@ -717,14 +873,43 @@ static void build_class(GClass *g)
 	add_method_lists(cls, 0, a);
 	add_method_lists(cls, 1, meta);
 	add_protocols(cls, *(uint32_t *)GP(a + 36));
-	if (sup && !xl_is_guest_class(sup))
+	if (sup && !xl_is_guest_class(sup)) {
 		class_addMethod(g->hmeta, @selector(allocWithZone:), (IMP)xl_allocWithZone, "@@:^v");
+		class_addMethod(cls, @selector(setValue:forUndefinedKey:), (IMP)xl_setValueForUndefinedKey, "v@:@@");
+		class_addMethod(cls, @selector(valueForUndefinedKey:), (IMP)xl_valueForUndefinedKey, "@@:@");
+	}
 	objc_registerClassPair(cls);
 	if (xl_verbose > 2)
 		xl_log("class %s : %s", g->name, sup ? class_getName(sup) : "-");
 }
 
 // ---- constant strings ----------------------------------------------------------------------
+// Constant strings ignore retain/release on i386 and guest code relies on it
+// (it may release a literal): the host strings are made immortal the way CFSTR
+// does, or else kept with a reference count release can never use up.
+extern CFStringRef __CFStringMakeConstantString(const char *);
+
+static CFStringRef immortal(CFStringRef cs)
+{
+	if (!cs)
+		return cs;
+	char buf[1024];
+	if (CFStringGetCString(cs, buf, sizeof buf, kCFStringEncodingUTF8)) {
+		bool ascii = true;
+		for (const char *p = buf; *p; p++)
+			if ((uint8_t)*p >= 0x80)
+				ascii = false;
+		if (ascii && (CFIndex)strlen(buf) == CFStringGetLength(cs)) {
+			CFStringRef k = __CFStringMakeConstantString(buf);
+			CFRelease(cs);
+			return k;
+		}
+	}
+	for (int i = 0; i < 1 << 16; i++)
+		CFRetain(cs);
+	return cs;
+}
+
 static void cfstrings(XLImage *im)
 {
 	uint32_t s = *im->slide;
@@ -748,7 +933,7 @@ static void cfstrings(XLImage *im)
 				CFRelease(cs);
 				cs = (CFStringRef)[home copy];
 			}
-			xl_bind_handle(e, cs);
+			xl_bind_handle(e, immortal(cs));
 		}
 	}
 }
@@ -936,4 +1121,7 @@ void xl_objc_init(void)
 	if (xl_verbose > 0)
 		xl_log("%d classes, %d categories", ngclasses, ncats);
 	free(cats);
+	hook_outlets();
+	extern void xl_appkit_hooks(void);
+	xl_appkit_hooks();
 }

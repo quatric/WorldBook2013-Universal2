@@ -8,6 +8,14 @@
 
 uint8_t *XG;
 int xl_verbose = -1;
+int xl_trace_on;
+
+void xl_trace_fn(XLCPU *c, uint32_t addr)
+{
+	uint32_t sp = c->r[ESP];
+	uint32_t *a = (uint32_t *)GP(sp);
+	xl_log("fn %s(%08x, %08x, %08x) ret %08x", xl_name_at(addr), a[1], a[2], a[3], a[0]);
+}
 
 void xl_log(const char *fmt, ...)
 {
@@ -131,6 +139,7 @@ void xl_window_init(void)
 		xl_die("cannot reserve the guest window");
 	XG = p;
 	// no null-page guard: host pages are 16 KB and the executable starts at 0x1000
+	xl_trace_on = getenv("XL_TRACE") != NULL;
 	const char *v = getenv("XL_VERBOSE");
 	if (v)
 		xl_verbose = atoi(v);

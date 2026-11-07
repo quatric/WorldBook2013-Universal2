@@ -4,6 +4,7 @@
 #import <OpenGL/gl.h>
 #import <CoreServices/CoreServices.h>
 #include "rt.h"
+#import <OpenGL/OpenGL.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -77,16 +78,6 @@ static void sh_delete(XLCPU *c) { xl_free(A(0)); xl_ret(c, 0); }
 static void sh_guard_acquire(XLCPU *c) { xl_ret(c, *(uint8_t *)GP(A(0)) == 0); }
 static void sh_guard_release(XLCPU *c) { *(uint8_t *)GP(A(0)) = 1; xl_ret(c, 0); }
 static void sh_cxa_atexit(XLCPU *c) { xl_ret(c, 0); }
-static void sh_cxa_allocate_exception(XLCPU *c) { xl_ret(c, xl_calloc(A(0) + 16) + 16); }
-static void sh_cxa_throw(XLCPU *c)
-{
-	uint32_t ti = A(1);
-	const char *nm = ti ? (const char *)GP(U32(ti + 4)) : "?";
-	uint32_t ret = U32(c->r[ESP]);
-	xl_backtrace(c);
-	xl_die("C++ exception of type %s thrown (from %s); guest C++ exceptions are not supported yet", nm, xl_name_at(ret));
-}
-static void sh_cxa_begin_catch(XLCPU *c) { xl_ret(c, A(0)); }
 static void sh_fatal(XLCPU *c)
 {
 	uint32_t ret = U32(c->r[ESP]);
@@ -423,6 +414,17 @@ static void sh_msgSend_fpret(XLCPU *c) { xl_msgsend(c, XL_MSG_FPRET); }
 static void sh_msgSendSuper(XLCPU *c) { xl_msgsend(c, XL_MSG_SUPER); }
 static void sh_msgSendSuper_stret(XLCPU *c) { xl_msgsend(c, XL_MSG_SUPER_STRET); }
 
+void xl_sh_cxa_allocate_exception(XLCPU *c);
+void xl_sh_cxa_free_exception(XLCPU *c);
+void xl_sh_cxa_throw(XLCPU *c);
+void xl_sh_cxa_begin_catch(XLCPU *c);
+void xl_sh_cxa_end_catch(XLCPU *c);
+void xl_sh_cxa_get_exception_ptr(XLCPU *c);
+void xl_sh_cxa_rethrow(XLCPU *c);
+void xl_sh_unwind_resume(XLCPU *c);
+void xl_sh_cxa_current_exception_type(XLCPU *c);
+void xl_sh_uncaught_exception(XLCPU *c);
+void xl_sh_cxa_call_unexpected(XLCPU *c);
 void xl_sh_objc_exception_try_enter(XLCPU *c);
 void xl_sh_objc_exception_try_exit(XLCPU *c);
 void xl_sh_objc_exception_extract(XLCPU *c);
@@ -756,9 +758,95 @@ static void sh_FSFindFolder(XLCPU *c)
 	xl_ret(c, (uint32_t)(int32_t)r);
 }
 
+// CFStringGetCharactersPtr: strings made over guest buffers (external characters)
+// hand back that buffer; any other string has no guest-visible pointer
+static void sh_CFStringGetCharactersPtr(XLCPU *c)
+{
+	CFStringRef str = (CFStringRef)xl_p(A(0));
+	const UniChar *p = str ? CFStringGetCharactersPtr(str) : NULL;
+	xl_ret(c, p && xl_in_window(p) ? (uint32_t)((const uint8_t *)p - XG) : 0);
+}
+// FSSpec resource files are gone from the 64-bit Resource Manager: creating
+// or opening one fails with fnfErr (used for Finder alias files only)
+static OSErr res_err_override;
+static void sh_FSpCreateResFile(XLCPU *c) { res_err_override = fnfErr; xl_ret(c, 0); }
+static void sh_FSpOpenResFile(XLCPU *c) { res_err_override = fnfErr; xl_ret(c, 0xffffffffu); }
+static void sh_NewAlias(XLCPU *c)
+{
+	if (A(2))
+		U32(A(2)) = 0;
+	xl_ret(c, (uint32_t)(int32_t)fnfErr);
+}
+static void sh_ResError(XLCPU *c)
+{
+	OSErr e = res_err_override ? res_err_override : ResError();
+	res_err_override = 0;
+	xl_ret(c, (uint32_t)(int32_t)e);
+}
+
+// GetProcessInformation: i386 ProcessInfoRec is
+//   0 length, 4 name, 8 number(8), 16 type, 20 signature, 24 mode, 28 location,
+//   32 size, 36 freeMem, 40 launcher(8), 48 launchDate, 52 activeTime, 56 appSpec (FSSpec *)
+// the FSSpec cannot be filled in (no FSSpec on 64-bit): it is left alone
+static void sh_GetProcessInformation(XLCPU *c)
+{
+	ProcessSerialNumber psn;
+	memcpy(&psn, GP(A(0)), sizeof psn);
+	uint32_t g = A(1);
+	ProcessInfoRec r;
+	memset(&r, 0, sizeof r);
+	r.processInfoLength = sizeof r;
+	uint32_t name = U32(g + 4);
+	r.processName = name ? (StringPtr)GP(name) : NULL;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	OSErr e = GetProcessInformation(&psn, &r);
+#pragma clang diagnostic pop
+	if (e == noErr) {
+		memcpy(GP(g + 8), &r.processNumber, 8);
+		U32(g + 16) = r.processType;
+		U32(g + 20) = r.processSignature;
+		U32(g + 24) = r.processMode;
+		U32(g + 28) = 0;
+		U32(g + 32) = r.processSize;
+		U32(g + 36) = r.processFreeMem;
+		memcpy(GP(g + 40), &r.processLauncher, 8);
+		U32(g + 48) = r.processLaunchDate;
+		U32(g + 52) = r.processActiveTime;
+	}
+	xl_ret(c, (uint32_t)(int32_t)e);
+}
+
+// CGL objects with out-parameters: the host object becomes a handle in the guest slot
+static void sh_CGLQueryRendererInfo(XLCPU *c)
+{
+	CGLRendererInfoObj r = NULL;
+	GLint n = 0;
+	CGLError e = CGLQueryRendererInfo(A(0), &r, &n);
+	if (A(1))
+		U32(A(1)) = r ? xl_h(r) : 0;
+	if (A(2))
+		*(int32_t *)GP(A(2)) = n;
+	xl_ret(c, e);
+}
+static void sh_CGLChoosePixelFormat(XLCPU *c)
+{
+	CGLPixelFormatObj pf = NULL;
+	GLint n = 0;
+	CGLError e = CGLChoosePixelFormat((const CGLPixelFormatAttribute *)GP(A(0)), &pf, &n);
+	if (A(1))
+		U32(A(1)) = pf ? xl_h(pf) : 0;
+	if (A(2))
+		*(int32_t *)GP(A(2)) = n;
+	xl_ret(c, e);
+}
+
 // ---- table ---------------------------------------------------------------------------------------------------------
 typedef struct { const char *name; XLShim fn; } ShimEnt;
 static const ShimEnt shims[] = {
+	{"_FSpCreateResFile", sh_FSpCreateResFile}, {"_FSpOpenResFile", sh_FSpOpenResFile}, {"_NewAlias", sh_NewAlias},
+	{"_ResError", sh_ResError}, {"_CGLQueryRendererInfo", sh_CGLQueryRendererInfo},
+	{"_CGLChoosePixelFormat", sh_CGLChoosePixelFormat}, {"_GetProcessInformation", sh_GetProcessInformation},
 	{"_malloc", sh_malloc}, {"_calloc", sh_calloc}, {"_realloc", sh_realloc}, {"_free", sh_free},
 	{"_valloc", sh_valloc},
 	{"_NewPtr", sh_NewPtr}, {"_NewPtrClear", sh_NewPtrClear}, {"_DisposePtr", sh_DisposePtr},
@@ -769,9 +857,13 @@ static const ShimEnt shims[] = {
 	{"__ZdlPv", sh_delete}, {"__ZdaPv", sh_delete}, {"__ZdlPvRKSt9nothrow_t", sh_delete},
 	{"___cxa_guard_acquire", sh_guard_acquire}, {"___cxa_guard_release", sh_guard_release},
 	{"___cxa_guard_abort", sh_nop}, {"___cxa_finalize", sh_nop}, {"___cxa_atexit", sh_cxa_atexit}, {"_atexit", sh_cxa_atexit},
-	{"___cxa_allocate_exception", sh_cxa_allocate_exception}, {"___cxa_throw", sh_cxa_throw},
-	{"___cxa_begin_catch", sh_cxa_begin_catch}, {"___cxa_end_catch", sh_nop}, {"___cxa_rethrow", sh_fatal},
-	{"___cxa_call_unexpected", sh_fatal}, {"__Unwind_Resume_or_Rethrow", sh_fatal}, {"__Unwind_Resume", sh_fatal},
+	{"___cxa_allocate_exception", xl_sh_cxa_allocate_exception}, {"___cxa_free_exception", xl_sh_cxa_free_exception},
+	{"___cxa_throw", xl_sh_cxa_throw}, {"___cxa_begin_catch", xl_sh_cxa_begin_catch},
+	{"___cxa_end_catch", xl_sh_cxa_end_catch}, {"___cxa_get_exception_ptr", xl_sh_cxa_get_exception_ptr},
+	{"___cxa_rethrow", xl_sh_cxa_rethrow}, {"___cxa_call_unexpected", xl_sh_cxa_call_unexpected},
+	{"__Unwind_Resume_or_Rethrow", xl_sh_unwind_resume}, {"__Unwind_Resume", xl_sh_unwind_resume},
+	{"___cxa_current_exception_type", xl_sh_cxa_current_exception_type},
+	{"__ZSt18uncaught_exceptionv", xl_sh_uncaught_exception},
 	{"__ZSt9terminatev", sh_terminate}, {"__ZSt17__throw_bad_allocv", sh_fatal},
 	{"__ZSt20__throw_length_errorPKc", sh_fatal}, {"___cxa_pure_virtual", sh_fatal},
 	{"__ZNSt9exceptionD2Ev", sh_nop}, {"__ZNSt9exceptionD1Ev", sh_nop}, {"__ZNSt9exceptionD0Ev", sh_nop},
@@ -801,7 +893,7 @@ static const ShimEnt shims[] = {
 	{"_CFBundleGetFunctionPointerForName", sh_CFBundleGetFunctionPointerForName},
 	{"_CFDataGetBytePtr", sh_CFDataGetBytePtr},
 	{"_CFAllocatorCreate", sh_CFAllocatorCreate}, {"_CFAllocatorAllocate", sh_CFAllocatorAllocate},
-	{"_CFAllocatorReallocate", sh_CFAllocatorReallocate}, {"_CFAllocatorDeallocate", sh_CFAllocatorDeallocate}, {"_CFStringGetCharactersPtr", sh_zero},
+	{"_CFAllocatorReallocate", sh_CFAllocatorReallocate}, {"_CFAllocatorDeallocate", sh_CFAllocatorDeallocate}, {"_CFStringGetCharactersPtr", sh_CFStringGetCharactersPtr},
 	{"_glGetString", sh_glGetString}, {"_FSFindFolder", sh_FSFindFolder},
 	{"_CGDisplayCapture", sh_ok}, {"_CGDisplayRelease", sh_ok}, {"_CGCaptureAllDisplays", sh_ok},
 	{"_CGReleaseAllDisplays", sh_ok}, {"_CGDisplaySwitchToMode", sh_ok}, {"_CGSetDisplayTransferByFormula", sh_ok},

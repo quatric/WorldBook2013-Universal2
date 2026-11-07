@@ -229,6 +229,15 @@ static void Run(NSString *aLine)
 			Log(@"window %@ %@ \"%@\"", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title]);
 			Dump([w contentView], 1);
 		}
+	} else if ([cmd isEqualToString:@"wshot"]) {
+		// the app's frontmost window as the window server shows it (OpenGL content included)
+		NSWindow *w = [Windows() firstObject];
+		if (w) {
+			NSString *c = [NSString stringWithFormat:@"/usr/sbin/screencapture -x -o -l %ld '%@'", (long)[w windowNumber], arg];
+			system([c UTF8String]);
+			Log(@"wshot %@ (window %ld)", arg, (long)[w windowNumber]);
+		} else
+			Log(@"wshot: no window");
 	} else if ([cmd isEqualToString:@"windows"]) {
 		for (NSWindow *w in Windows())
 			Log(@"window %@ %@ \"%@\"%@", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"");

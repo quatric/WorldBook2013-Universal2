@@ -15,6 +15,7 @@ Also written: the image as laid out in memory (image.bin), its rebases,
 binds, exports and section ranges (image.c) for the runtime's loader.
 """
 import os
+import re
 import struct
 import sys
 
@@ -23,6 +24,9 @@ from capstone import x86
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import macho32  # noqa: E402
+import eh32  # noqa: E402
+
+LSDA = {}   # function start -> LSDA address
 
 GPR = {}
 for i, n in enumerate(['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']):
@@ -49,6 +53,10 @@ MSGSEND = {'_objc_msgSend': 'XL_MSG_NORMAL', '_objc_msgSend_stret': 'XL_MSG_STRE
            '_objc_msgSendSuper_stret': 'XL_MSG_SUPER_STRET'}
 # imports with their own handling in the runtime (guest-level semantics)
 SETJMP = {'_setjmp', '__setjmp', '_sigsetjmp'}
+NORETURN = {'__ZSt9terminatev', '___cxa_throw', '___cxa_rethrow', '__Unwind_Resume', '__Unwind_Resume_or_Rethrow',
+            '___cxa_call_unexpected', '_abort', '_exit', '__exit', '___stack_chk_fail', '_objc_exception_throw',
+            '__ZSt17__throw_bad_allocv', '__ZSt20__throw_length_errorPKc', '__ZSt20__throw_out_of_rangePKc',
+            '__ZSt19__throw_logic_errorPKc', '___assert_rtn', '_longjmp', '_siglongjmp', '__longjmp'}
 
 
 class Unsupported(Exception):
@@ -103,6 +111,12 @@ class Func:
         self.tables = {}          # jmp insn address -> list of targets
         self.ext_targets = set()
         self.picbase = {}         # call insn address -> (reg, value): a PIC base set up there
+        self.sites = []           # C++ call sites: (start, end, landing pad, clauses, cleanup)
+        if start in LSDA:
+            try:
+                self.sites = eh32.parse_lsda(img.m, start, LSDA[start])
+            except Exception as ex:
+                print('bad LSDA for %x: %s' % (start, ex))
         self.decode()
 
     def next_start(self):
@@ -120,7 +134,12 @@ class Func:
     def decode(self):
         img = self.img
         work = [self.start]
+        for st in self.sites:
+            if self.owns(st[2]):
+                self.leaders.add(st[2])
+                work.append(st[2])
         pic = {}   # register -> known PIC base value (along the current path)
+        spill = {}  # ebp displacement -> PIC base value stored there
         while work:
             a = work.pop()
             while a not in self.insns:
@@ -138,6 +157,18 @@ class Func:
                 self.insns[a] = i
                 m = i.mnemonic
                 nxt = a + i.size
+                if m == 'mov' and len(i.operands) == 2:
+                    d, src = i.operands
+                    if d.type == x86.X86_OP_MEM and src.type == x86.X86_OP_REG and d.mem.base == x86.X86_REG_EBP \
+                            and not d.mem.index:
+                        rn = self.cs.reg_name(src.reg)
+                        if rn in pic:
+                            spill[d.mem.disp] = pic[rn]
+                        else:
+                            spill.pop(d.mem.disp, None)
+                    elif d.type == x86.X86_OP_REG and src.type == x86.X86_OP_MEM and src.mem.base == x86.X86_REG_EBP \
+                            and not src.mem.index and src.mem.disp in spill:
+                        pic[self.cs.reg_name(d.reg)] = spill[src.mem.disp]
                 if m.startswith('j'):
                     op = i.operands[0]
                     if op.type == x86.X86_OP_IMM:
@@ -162,6 +193,11 @@ class Func:
                         break
                 elif m == 'call':
                     op = i.operands[0]
+                    if op.type == x86.X86_OP_IMM and img.stubs.get(op.imm) in NORETURN:
+                        break
+                    if op.type == x86.X86_OP_MEM and not op.mem.base and not op.mem.index and \
+                            img.slots.get(op.mem.disp & 0xffffffff) in NORETURN:
+                        break
                     if op.type == x86.X86_OP_IMM:
                         t = op.imm
                         if t == nxt:
@@ -244,6 +280,7 @@ class Emitter:
     def __init__(self, img, func, imports):
         self.img, self.f, self.imports = img, func, imports
         self.cs = func.cs
+        self.ehs = []
 
     def name(self, addr):
         return 'F_%s_%x' % (self.img.ident, addr)
@@ -339,6 +376,38 @@ class Emitter:
             return 'SO; %s; return;' % c
         # a call pushes the return address; the bridge pops it like a callee
         return 'r4 -= 4; ST32(r4, 0); SO; %s; SI;' % c
+
+    def site(self, a):
+        for st in self.f.sites:
+            if st[0] <= a < st[1] and self.f.owns(st[2]):
+                return st
+        return None
+
+    TRYABLE = re.compile(r'^(.*SO; )(?:xl_ccall\(c, (&XI\[\d+\])\)|xl_msgsend\(c, (\w+)\)|xl_call\(c, (.*)\)|(F_\w+)\(c\)); SI;$')
+
+    def try_wrap(self, a, code):
+        """a call inside a protected range: on a caught exception go to the landing pad"""
+        st = self.site(a)
+        if st is None:
+            return code
+        mt = self.TRYABLE.match(code)
+        if not mt:
+            return code
+        pre, imp, kind, tgt, fn = mt.groups()
+        n = len(self.ehs)
+        nm = 'EH_%s_%x_%d' % (self.img.ident, self.f.start, n)
+        cl = ', '.join('{%d, 0x%x, %d}' % c for c in st[3])
+        self.ehs.append('static const XLEHClause %s_cl[] = {%s};\nstatic const XLEH %s = {%d, %d, %s_cl};'
+                        % (nm, cl or '{0, 0, 2}', nm, len(st[3]), 1 if st[4] else 0, nm))
+        if imp:
+            call = 'xl_try_ccall(c, %s, &%s, S)' % (imp, nm)
+        elif kind:
+            call = 'xl_try_msgsend(c, %s, &%s, S)' % (kind, nm)
+        elif tgt:
+            call = 'xl_try_call(c, %s, &%s, S)' % (tgt, nm)
+        else:
+            call = 'xl_try_fn(c, %s, &%s, S)' % (fn, nm)
+        return '%sif (%s) { SI; goto L_%x; } SI;' % (pre, call, st[2])
 
     def setjmp_call(self, i, sym):
         """inline host setjmp, so a guest longjmp lands back in this frame"""
@@ -853,7 +922,7 @@ class Emitter:
     # ---- whole function ---------------------------------------------------
     def emit(self):
         f = self.f
-        out = ['void %s(XLCPU *c)\n{\n\tREGS;\n\tgoto L_%x;' % (self.name(f.start), f.start)]
+        out = ['void %s(XLCPU *c)\n{\n\tREGS;\n\tXL_TRACE(A(0x%x));\n\tgoto L_%x;' % (self.name(f.start), f.start, f.start)]
         for a in sorted(f.insns):
             i = f.insns[a]
             if a in f.leaders or a == f.start:
@@ -868,7 +937,7 @@ class Emitter:
             body = None
             try:
                 if m == 'call':
-                    body = [self.call_target(i, i.operands[0], False)]
+                    body = [self.try_wrap(a, self.call_target(i, i.operands[0], False))]
                 elif m == 'jmp':
                     op = i.operands[0]
                     if op.type == x86.X86_OP_IMM and f.owns(op.imm):
@@ -903,7 +972,7 @@ class Emitter:
             if m not in ('jmp', 'ret', 'ud2', 'hlt') and nxt not in f.insns:
                 out.append('\txl_trap(c, A(0x%x));' % nxt)
         out.append('}\n')
-        return '\n'.join(out)
+        return '\n'.join(self.ehs + out)
 
 
 XEXPORTS = set()
@@ -915,6 +984,7 @@ def main():
     for o in sys.argv[4:]:
         XEXPORTS.update(macho32.MachO32(o).exports)
     img = Image(path, ident)
+    LSDA.update(eh32.lsda_map(img.m))
     cs = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     cs.detail = True
     funcs, failed = {}, {}

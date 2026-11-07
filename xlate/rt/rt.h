@@ -88,6 +88,11 @@ typedef void (*XLShim)(XLCPU *c);
 XLShim xl_find_shim(const char *name);
 void *xl_resolve_import(const char *name);     // XLBridge for an imported function
 
+// NSInteger/long values: NSNotFound is NSIntegerMax on both sides
+static inline uint32_t xl_long_out(uint64_t v) { return v == 0x7fffffffffffffffull ? 0x7fffffffu : (uint32_t)v; }
+static inline int64_t xl_slong_in(uint32_t v) { return v == 0x7fffffffu ? 0x7fffffffffffffffll : (int64_t)(int32_t)v; }
+static inline uint64_t xl_ulong_in(uint32_t v) { return v == 0x7fffffffu ? 0x7fffffffffffffffull : (uint64_t)v; }
+
 // ---- types ---------------------------------------------------------------------
 typedef struct XLType XLType;
 struct XLType {
@@ -124,5 +129,6 @@ const XLMethodType *xl_sdk_method(SEL sel, Class cls, int meta);
 int xl_method_sig(SEL sel, Class cls, int meta, const char *guest_enc, XLType **t, int max, int *variadic);
 void *xl_closure_for(uint32_t guest, const char *sig);
 void xl_exc_init(void);
+uint32_t xl_data_symbol(const char *name);
 
 #endif

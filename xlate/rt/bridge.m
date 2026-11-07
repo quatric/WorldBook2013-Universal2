@@ -218,7 +218,7 @@ static void set_ret(XLCPU *c, XLType *t, void *rv, uint32_t sret, int objret)
 	case 's': c->r[EAX] = (uint32_t)(int32_t)(int16_t)*(ffi_sarg *)rv; break;
 	case 'S': c->r[EAX] = (uint16_t)*(ffi_arg *)rv; break;
 	case 'i': case 'I': c->r[EAX] = (uint32_t)*(ffi_arg *)rv; break;
-	case 'l': case 'L': c->r[EAX] = (uint32_t)*(uint64_t *)rv; break;
+	case 'l': case 'L': c->r[EAX] = xl_long_out(*(uint64_t *)rv); break;
 	case 'q': case 'Q': {
 		uint64_t v = *(uint64_t *)rv;
 		c->r[EAX] = (uint32_t)v;
@@ -693,7 +693,8 @@ typedef struct MsgSig {
 	ffi_type *ft[32];
 	ffi_cif cif;
 	int variadic, objs, fmt;
-	int counts[32];      // array arguments: index of the count argument + 1, or -2 for a range length
+	int counts[32];      // array arguments: index of the count argument + 1, -2 for a range length, -3 for [self count]
+	int planes;          // initWithBitmapDataPlanes:...: 1, 2 with the bitmapFormat: argument
 	void (*special)(XLCPU *c, struct MsgSig *m, id self, uint32_t a0);
 } MsgSig;
 
@@ -778,6 +779,13 @@ static void array_counts(MsgSig *m)
 		m->counts[3] = -2;
 		return;
 	}
+	if (!strcmp(s, "getObjects:") || !strcmp(s, "getObjects:andKeys:")) {
+		// as many elements as the receiver holds
+		for (int i = 3; i < m->n; i++)
+			if (m->t[i]->kind == 'P')
+				m->counts[i] = -3;
+		return;
+	}
 	if (strstr(s, "count:")) {
 		// the count is the last integer argument; every P@ before it is an array
 		int ci = -1;
@@ -835,6 +843,8 @@ static MsgSig *msg_sig(Class cls, SEL sel, IMP imp, int meta, int nargs_hint)
 			m->objs = 1;
 	}
 	array_counts(m);
+	if (!strncmp(sel_getName(sel), "initWithBitmapDataPlanes:", 25))
+		m->planes = strstr(sel_getName(sel), "bitmapFormat:") ? 2 : 1;
 	for (int i = 0; i < n; i++)
 		m->ft[i] = m->t[i]->ffi;
 	if (!variadic && ffi_prep_cif(&m->cif, FFI_DEFAULT_ABI, n - 1, m->ft[0], m->ft + 1) != FFI_OK)
@@ -858,6 +868,49 @@ static void msg_nil(XLCPU *c, int kind)
 	c->r[ESP] += (kind == XL_MSG_STRET || kind == XL_MSG_SUPER_STRET) ? 8 : 4;
 }
 
+// NSBitmapImageRep with planes == NULL keeps its pixels in host memory, which
+// the guest cannot reach through bitmapData: give it planes in the window
+@interface XLGuestPlanes : NSObject {
+@public
+	uint32_t buf[5];
+}
+@end
+@implementation XLGuestPlanes
+- (void)dealloc
+{
+	for (int i = 0; i < 5; i++)
+		if (buf[i])
+			xl_free(buf[i]);
+	[super dealloc];
+}
+@end
+
+static XLGuestPlanes *guest_planes(MsgSig *m, uint32_t a0, unsigned char **hp)
+{
+	uint32_t *g = (uint32_t *)GP(a0 + 8);   // planes w h bps spp alpha planar csname [format] bpr bpp
+	if (g[0])
+		return nil;
+	int32_t w = (int32_t)g[1], h = (int32_t)g[2], bps = (int32_t)g[3], spp = (int32_t)g[4];
+	int planar = (uint8_t)g[6];
+	int k = m->planes == 2 ? 9 : 8;
+	int32_t bpr = (int32_t)g[k], bpp = (int32_t)g[k + 1];
+	if (w <= 0 || h <= 0 || bps <= 0 || spp <= 0)
+		return nil;
+	if (!bpp)
+		bpp = planar ? bps : bps * spp;
+	if (!bpr)
+		bpr = (w * bpp + 7) / 8;
+	int np = planar ? spp : 1;
+	if (np > 5)
+		return nil;
+	XLGuestPlanes *gp = [XLGuestPlanes new];
+	for (int i = 0; i < np; i++) {
+		gp->buf[i] = xl_calloc((uint32_t)bpr * (uint32_t)h);
+		hp[i] = GP(gp->buf[i]);
+	}
+	return gp;
+}
+
 static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 {
 	Args A;
@@ -878,6 +931,8 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 		int cnt = 0;
 		if (m->counts[i] == -2)
 			cnt = (int)*(uint32_t *)GP(g + 8);     // range length after the pointer
+		else if (m->counts[i] == -3)
+			cnt = (int)[(NSArray *)self count];
 		else if (m->counts[i] > 0) {
 			uint32_t ga = g;
 			for (int k = i; k < m->counts[i] - 1; k++)
@@ -912,13 +967,25 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 			xl_die("ffi_prep_cif_var failed for %s", sel_getName(m->sel));
 		cif = &vcif;
 	}
-	if (xl_verbose > 5)
+	static const char *logsel = (const char *)1;
+	if (logsel == (const char *)1)
+		logsel = getenv("XL_LOGSEL");
+	int logit = xl_verbose > 5 || (logsel && strstr(sel_getName(m->sel), logsel));
+	if (logit && xl_verbose <= 5)
+		xl_log("msg [%s %s] self %p", class_getName(object_getClass(self)), sel_getName(m->sel), self);
+	if (logit)
 		for (int i = 3; i < m->n && i - 1 < n; i++)
 			if (m->t[i]->kind == '@') {
 				id o = *(id *)A.vals[i - 1];
 				if ([o isKindOfClass:[NSString class]])
 					xl_log("    arg %d: \"%s\"", i - 3, [(NSString *)o UTF8String]);
+				else
+					xl_log("    arg %d: %s %p", i - 3, o ? class_getName(object_getClass(o)) : "nil", o);
 			}
+	unsigned char *hplanes[5] = {0};
+	XLGuestPlanes *gplanes = m->planes ? guest_planes(m, a0, hplanes) : nil;
+	if (gplanes)
+		*(unsigned char ***)A.vals[2] = hplanes;
 	uint8_t rv[256] __attribute__((aligned(16)));
 	memset(rv, 0, 16);
 	NSException *exc = nil;
@@ -928,13 +995,26 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 		exc = [e retain];
 	}
 	if (exc) {
+		if (xl_verbose > 0) {
+			uint32_t *ga = (uint32_t *)GP(a0);
+			xl_log("  raised by -[%s %s] args %08x %08x %08x %08x from %s", class_getName(object_getClass(self)),
+				sel_getName(m->sel), ga[2], ga[3], ga[4], ga[5], xl_name_at(*(uint32_t *)GP(c->r[ESP])));
+		}
 		args_free(&A, n);
 		c->r[ESP] += sret ? 8 : 4;
 		xl_exc_from_host(c, exc);    // longjmps into a guest handler or rethrows
 		return;
 	}
+	if (gplanes) {
+		id r = *(id *)rv;
+		if (r)
+			objc_setAssociatedObject(r, &guest_planes, gplanes, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+		[gplanes release];
+	}
 	copy_out(&A);
 	set_ret(c, rt, rv, sret, 1);
+	if (logit)
+		xl_log("    -> eax %08x", c->r[EAX]);
 	args_free(&A, n);
 	c->r[ESP] += sret ? 8 : 4;
 }

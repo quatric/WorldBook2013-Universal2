@@ -79,7 +79,7 @@ def classify(spelled, canon, depth=0):
         return '@'         # block: an object
     if '(*' in c or c.endswith(')') and '(' in c and '*' not in c:
         return '^'
-    if c.startswith('enum '):
+    if c.startswith('enum ') and not c.endswith('*'):
         u = enums.get(c[5:])
         return classify(u or 'int', u or 'int', depth + 1)
     base = {'int': 'i', 'unsigned int': 'I', 'short': 's', 'unsigned short': 'S', 'char': 'c', 'signed char': 'c',
@@ -116,6 +116,10 @@ def classify(spelled, canon, depth=0):
         if re.match(r'^[A-Z_a-z]\w*\s*(<.*>)?$', p) and not p.startswith('struct ') and not p.startswith('union ') \
                 and p not in base and not p.startswith('enum '):
             return '@'     # ObjC class pointer (NSString *)
+        if p.endswith('*'):
+            # pointer to a pointer (CFURLRef *, char **): an out-parameter
+            inner = classify(ps or p, p, depth + 1)
+            return 'P' + inner if inner in ('@', '*', ':') else '*'
         if p.startswith('struct ') or p.startswith('union '):
             nm = p.split(' ', 1)[1]
             if nm in defined:

@@ -98,4 +98,19 @@ double xl_fround(XLCPU *c, double v);
 double xl_ld80(uint32_t a);
 void xl_st80(uint32_t a, double v);
 
+// function-entry trace (XL_TRACE=1 in the environment)
+extern int xl_trace_on;
+void xl_trace_fn(XLCPU *c, uint32_t addr);
+#define XL_TRACE(a) do { if (__builtin_expect(xl_trace_on, 0)) xl_trace_fn(c, a); } while (0)
+
+// C++ exceptions: calls inside a protected range of the original go through
+// xl_try_*, which return 1 when the call threw and this site handles it
+// (eax = exception, edx = selector, registers as at the call)
+typedef struct { int32_t filter; uint32_t addr; int kind; } XLEHClause;   // kind 0: typeinfo, 1: slot, 2: spec
+typedef struct XLEH { int n, cleanup; const XLEHClause *cl; } XLEH;
+int xl_try_fn(XLCPU *c, XLFn fn, const XLEH *eh, uint32_t slide);
+int xl_try_call(XLCPU *c, uint32_t target, const XLEH *eh, uint32_t slide);
+int xl_try_ccall(XLCPU *c, XLImport *imp, const XLEH *eh, uint32_t slide);
+int xl_try_msgsend(XLCPU *c, int kind, const XLEH *eh, uint32_t slide);
+
 #endif
