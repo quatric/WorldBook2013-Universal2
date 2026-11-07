@@ -176,8 +176,17 @@ static void add_noop(const char *cls, const char *sel)
 		class_addMethod(c, s, (IMP)xl_noop_obj, "v@:@");
 }
 
+// Table column identifiers in the 2013 nibs are numbers; NSComboBoxCell now
+// compares them with -isEqualToString: while decoding
+static BOOL xl_number_isEqualToString(NSNumber *self, SEL _cmd, NSString *s)
+{
+	return [s isKindOfClass:[NSString class]] && [[self stringValue] isEqualToString:s];
+}
+
 void xl_appkit_hooks(void)
 {
+	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
+		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");
 	add_noop("HSArticleView", "layoutManagerDidInvalidateLayout:");
 	Class movie = objc_getClass("NSMovie");
 	if (movie && !class_getInstanceMethod(movie, @selector(initWithURL:byReference:)))

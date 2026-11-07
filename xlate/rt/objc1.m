@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import <objc/message.h>
 #include "rt.h"
+#include <dlfcn.h>
 #include <ctype.h>
 #include <ffi/ffi.h>
 
@@ -577,6 +578,25 @@ void *xl_closure_for(uint32_t guest, const char *sig)
 	return (void *)make_closure(guest, t, n);
 }
 
+// Guest categories on Foundation classes add what later systems have (firstObject,
+// containsString:, ...) or helpers. Where the host class already implements the
+// method, its version stays: host code calls it too (CFSetGetValues calls
+// -getObjects:) and expects host conventions.
+static int host_keeps(Class target, SEL sel)
+{
+	Class cls = class_isMetaClass(target) ? objc_getClass(class_getName(target)) : target;
+	const char *img = cls ? class_getImageName(cls) : NULL;
+	if (!img || cls == [NSObject class] || (!strstr(img, "/Foundation.framework/") && !strstr(img, "/CoreFoundation.framework/")))
+		return 0;     // NSObject's overrides are deliberate; other classes' are their own
+	Method m = class_getInstanceMethod(target, sel);
+	if (!m || xl_map_get(&imp2meth, (uint64_t)method_getImplementation(m)))
+		return 0;
+	Dl_info di;
+	if (!dladdr((void *)method_getImplementation(m), &di) || !di.dli_fname)
+		return 0;
+	return strstr(di.dli_fname, "/Foundation.framework/") || strstr(di.dli_fname, "/CoreFoundation.framework/");
+}
+
 static void add_methods(Class cls, int meta, uint32_t list, int replace)
 {
 	if (!list)
@@ -599,8 +619,13 @@ static void add_methods(Class cls, int meta, uint32_t list, int replace)
 			host_enc(t[k], one, sizeof one);
 			strlcat(enc, one, sizeof enc);
 		}
-		IMP fn = make_closure(imp, t, n);
 		Class target = meta ? object_getClass((id)cls) : cls;
+		if (replace && host_keeps(target, sel)) {
+			if (xl_verbose > 0)
+				xl_log("category method %c[%s %s] left to the host", meta ? '+' : '-', class_getName(cls), sel_getName(sel));
+			continue;
+		}
+		IMP fn = make_closure(imp, t, n);
 		IMP old = NULL;
 		if (replace)
 			old = class_replaceMethod(target, sel, fn, enc);
