@@ -19,6 +19,7 @@ struct XLBridge {
 	ffi_cif cif;
 	ffi_type *ft[32];
 	int variadic;
+	int valist;          // the guest passes a va_list where the host function takes "..."
 	int objret;          // returned pointers are objects
 };
 
@@ -541,7 +542,8 @@ static void call_ffi(XLCPU *c, XLBridge *b)
 			A.ft[n] = &ffi_type_sint32;
 			n++;
 		} else {
-			n = var_args(b->t, nfix, g, &A, 0, fi, is_scanf(b->name), fmtbuf, sizeof fmtbuf);
+			uint32_t gva = b->valist ? *(uint32_t *)GP(g) : g;
+			n = var_args(b->t, nfix, gva, &A, 0, fi, is_scanf(b->name), fmtbuf, sizeof fmtbuf);
 		}
 		if (ffi_prep_cif_var(&vcif, FFI_DEFAULT_ABI, nfix, n, rt->ffi, A.ft) != FFI_OK)
 			xl_die("ffi_prep_cif_var failed for %s", b->name);
@@ -648,9 +650,24 @@ void *xl_resolve_import(const char *name)
 		b->call = call_guest;
 		return b;
 	}
+	// va_list functions call their variadic forms: an i386 va_list points at
+	// the arguments as they lie on the stack, which the variadic path reads
+	static const char *const valist[][2] = {
+		{"_CFStringAppendFormatAndArguments", "_CFStringAppendFormat"},
+		{"_CFStringCreateWithFormatAndArguments", "_CFStringCreateWithFormat"},
+		{"_vfprintf", "_fprintf"}, {"_vprintf", "_printf"}, {"_vsprintf", "_sprintf"},
+		{"_vsnprintf", "_snprintf"}, {"_vasprintf", "_asprintf"}, {"_NSLogv", "_NSLog"},
+		{"_vsyslog", "_syslog"},
+	};
+	const char *host = name;
+	for (unsigned i = 0; i < sizeof valist / sizeof *valist; i++)
+		if (!strcmp(name, valist[i][0])) {
+			host = valist[i][1];
+			b->valist = 1;
+		}
 	int variadic;
-	const char *sig = c_sig(name, &variadic);
-	void *fn = dlsym(RTLD_DEFAULT, name + 1);
+	const char *sig = c_sig(host, &variadic);
+	void *fn = dlsym(RTLD_DEFAULT, host + 1);
 	if (sig)
 		b->n = xl_sig_split(sig, b->t, 32);
 	if (!fn || !sig) {

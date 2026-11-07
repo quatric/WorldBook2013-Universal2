@@ -163,8 +163,22 @@ static id xl_movie_initWithURL(id self, SEL _cmd, NSURL *url, BOOL byRef)
 	return nil;
 }
 
+// ---- delegate messages current AppKit sends without asking -------------------------------
+// NSLayoutManager sends -layoutManagerDidInvalidateLayout: to a delegate that
+// implements other layout delegate methods even when it does not respond to it
+static void xl_noop_obj(id self, SEL _cmd, id arg) {}
+
+static void add_noop(const char *cls, const char *sel)
+{
+	Class c = objc_getClass(cls);
+	SEL s = sel_registerName(sel);
+	if (c && !class_respondsToSelector(c, s))
+		class_addMethod(c, s, (IMP)xl_noop_obj, "v@:@");
+}
+
 void xl_appkit_hooks(void)
 {
+	add_noop("HSArticleView", "layoutManagerDidInvalidateLayout:");
 	Class movie = objc_getClass("NSMovie");
 	if (movie && !class_getInstanceMethod(movie, @selector(initWithURL:byReference:)))
 		class_addMethod(movie, @selector(initWithURL:byReference:), (IMP)xl_movie_initWithURL, "@@:@c");

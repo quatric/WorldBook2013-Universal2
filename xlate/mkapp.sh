@@ -7,6 +7,9 @@ APP="build/2013 World Book.app"
 # keep the bundle in step with the extracted original (symlinks included)
 mkdir -p "$APP"
 rsync -a --exclude "/Contents/MacOS/2013 World Book" "$SRC/" "$APP/"
+# the original predates Dark Mode, which an executable linked against a
+# current SDK would get
+plutil -replace NSRequiresAquaSystemAppearance -bool YES "$APP/Contents/Info.plist"
 # a new file each time: the kernel caches code signatures per file, and an
 # executable overwritten in place gets killed at launch; the linker's ad-hoc
 # signature is kept (the bundle itself carries the original's resources)
