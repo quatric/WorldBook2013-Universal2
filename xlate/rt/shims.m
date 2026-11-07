@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 #import <OpenGL/gl.h>
+#import <OpenGL/glext.h>
 #import <CoreServices/CoreServices.h>
 #include "rt.h"
 #import <OpenGL/OpenGL.h>
@@ -841,12 +842,27 @@ static void sh_CGLChoosePixelFormat(XLCPU *c)
 	xl_ret(c, e);
 }
 
+static void sh_glTexImage2D(XLCPU *c)
+{
+	if (getenv("XL_GLLOG")) {
+		GLint al = 0, rl = 0, cs = 0;
+		glGetIntegerv(GL_UNPACK_ALIGNMENT, &al);
+		glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rl);
+		glGetIntegerv(GL_UNPACK_CLIENT_STORAGE_APPLE, &cs);
+		xl_log("glTexImage2D target %x level %d ifmt %x %dx%d fmt %x type %x data %08x align %d rowlen %d client %d",
+			A(0), A(1), A(2), A(3), A(4), A(6), A(7), A(8), al, rl, cs);
+	}
+	glTexImage2D(A(0), (GLint)A(1), (GLint)A(2), (GLsizei)A(3), (GLsizei)A(4), (GLint)A(5), A(6), A(7),
+		A(8) ? GP(A(8)) : NULL);
+	xl_ret(c, 0);
+}
+
 // ---- table ---------------------------------------------------------------------------------------------------------
 typedef struct { const char *name; XLShim fn; } ShimEnt;
 static const ShimEnt shims[] = {
 	{"_FSpCreateResFile", sh_FSpCreateResFile}, {"_FSpOpenResFile", sh_FSpOpenResFile}, {"_NewAlias", sh_NewAlias},
 	{"_ResError", sh_ResError}, {"_CGLQueryRendererInfo", sh_CGLQueryRendererInfo},
-	{"_CGLChoosePixelFormat", sh_CGLChoosePixelFormat}, {"_GetProcessInformation", sh_GetProcessInformation},
+	{"_CGLChoosePixelFormat", sh_CGLChoosePixelFormat}, {"_glTexImage2D", sh_glTexImage2D}, {"_GetProcessInformation", sh_GetProcessInformation},
 	{"_malloc", sh_malloc}, {"_calloc", sh_calloc}, {"_realloc", sh_realloc}, {"_free", sh_free},
 	{"_valloc", sh_valloc},
 	{"_NewPtr", sh_NewPtr}, {"_NewPtrClear", sh_NewPtrClear}, {"_DisposePtr", sh_DisposePtr},

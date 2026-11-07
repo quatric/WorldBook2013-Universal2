@@ -1,5 +1,6 @@
 // Guest -> host calls: C functions and Objective-C messages.
 #import <Foundation/Foundation.h>
+#import <AppKit/NSBitmapImageRep.h>
 #import <objc/message.h>
 #include "rt.h"
 #include <ffi/ffi.h>
@@ -873,6 +874,7 @@ static void msg_nil(XLCPU *c, int kind)
 @interface XLGuestPlanes : NSObject {
 @public
 	uint32_t buf[5];
+	uint32_t size;
 }
 @end
 @implementation XLGuestPlanes
@@ -885,7 +887,26 @@ static void msg_nil(XLCPU *c, int kind)
 }
 @end
 
-static XLGuestPlanes *guest_planes(MsgSig *m, uint32_t a0, unsigned char **hp)
+// -bitmapData of a rep whose pixels the host allocated: a copy in the window,
+// kept with the rep and refreshed on every call (readers such as texture
+// uploads see the current pixels; guest writes to it do not reach the rep)
+static void *bitmap_copy(NSBitmapImageRep *rep, const void *hp)
+{
+	NSInteger n = [rep bytesPerPlane];
+	if (n <= 0 || n > 0x10000000)
+		return NULL;
+	XLGuestPlanes *gp = objc_getAssociatedObject(rep, &bitmap_copy);
+	if (!gp || gp->size != (uint32_t)n) {
+		gp = [[XLGuestPlanes new] autorelease];
+		gp->buf[0] = xl_malloc((uint32_t)n);
+		gp->size = (uint32_t)n;
+		objc_setAssociatedObject(rep, &bitmap_copy, gp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+	}
+	memcpy(GP(gp->buf[0]), hp, (size_t)n);
+	return GP(gp->buf[0]);
+}
+
+static XLGuestPlanes *guest_planes(MsgSig *m, uint32_t a0, unsigned char **hp, long *obpr, long *obpp)
 {
 	uint32_t *g = (uint32_t *)GP(a0 + 8);   // planes w h bps spp alpha planar csname [format] bpr bpp
 	if (g[0])
@@ -900,6 +921,8 @@ static XLGuestPlanes *guest_planes(MsgSig *m, uint32_t a0, unsigned char **hp)
 		bpp = planar ? bps : bps * spp;
 	if (!bpr)
 		bpr = (w * bpp + 7) / 8;
+	*obpr = bpr;    // tightly packed rows, as the old AppKit made them: callers upload without a row length
+	*obpp = bpp;
 	int np = planar ? spp : 1;
 	if (np > 5)
 		return nil;
@@ -983,9 +1006,14 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 					xl_log("    arg %d: %s %p", i - 3, o ? class_getName(object_getClass(o)) : "nil", o);
 			}
 	unsigned char *hplanes[5] = {0};
-	XLGuestPlanes *gplanes = m->planes ? guest_planes(m, a0, hplanes) : nil;
-	if (gplanes)
+	long gbpr = 0, gbpp = 0;
+	XLGuestPlanes *gplanes = m->planes ? guest_planes(m, a0, hplanes, &gbpr, &gbpp) : nil;
+	if (gplanes) {
+		int k = m->planes == 2 ? 9 : 8;
 		*(unsigned char ***)A.vals[2] = hplanes;
+		*(long *)A.vals[2 + k] = gbpr;
+		*(long *)A.vals[3 + k] = gbpp;
+	}
 	uint8_t rv[256] __attribute__((aligned(16)));
 	memset(rv, 0, 16);
 	NSException *exc = nil;
@@ -1011,6 +1039,9 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 			objc_setAssociatedObject(r, &guest_planes, gplanes, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 		[gplanes release];
 	}
+	if (rt->kind == '*' && *(void **)rv && !xl_in_window(*(void **)rv) && m->sel == @selector(bitmapData)
+		&& [self isKindOfClass:[NSBitmapImageRep class]])
+		*(void **)rv = bitmap_copy(self, *(void **)rv);
 	copy_out(&A);
 	set_ret(c, rt, rv, sret, 1);
 	if (logit)

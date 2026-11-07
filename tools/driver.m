@@ -233,6 +233,7 @@ static void Run(NSString *aLine)
 		// the app's frontmost window as the window server shows it (OpenGL content included)
 		NSWindow *w = [Windows() firstObject];
 		if (w) {
+			unsetenv("DYLD_INSERT_LIBRARIES");
 			NSString *c = [NSString stringWithFormat:@"/usr/sbin/screencapture -x -o -l %ld '%@'", (long)[w windowNumber], arg];
 			system([c UTF8String]);
 			Log(@"wshot %@ (window %ld)", arg, (long)[w windowNumber]);
