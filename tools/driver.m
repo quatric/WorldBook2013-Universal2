@@ -205,7 +205,7 @@ static void Run(NSString *aLine)
 		if ([responder respondsToSelector:@selector(insertText:)])
 			[responder insertText:arg];
 		Log(@"type into %@", NSStringFromClass([responder class]));
-	} else if ([cmd isEqualToString:@"mouse"] || [cmd isEqualToString:@"move"]) {
+	} else if ([cmd isEqualToString:@"mouse"] || [cmd isEqualToString:@"move"] || [cmd isEqualToString:@"dclick"]) {
 		// x y in the coordinates of a `shot` of the key window (top left origin)
 		NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow] ?: Windows().firstObject;
 		NSArray *xy = [arg componentsSeparatedByString:@" "];
@@ -214,16 +214,112 @@ static void Run(NSString *aLine)
 			[w sendEvent:[NSEvent mouseEventWithType:NSEventTypeMouseMoved location:p modifierFlags:0 timestamp:0 windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:0 pressure:0]];
 		} else {
 			// queued, not sent: a mouse-down handler may run its own
-			// tracking loop that waits for the mouse-up
+			// tracking loop that waits for the mouse-up. The window is made key
+			// within the app first (the app itself is not activated), or the
+			// click would only bring it forward
+			if (![w isKeyWindow] && [w canBecomeKeyWindow])
+				[w makeKeyWindow];
 			NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
 			NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:p modifierFlags:0 timestamp:now windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:1 pressure:1];
 			NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:p modifierFlags:0 timestamp:now + 0.05 windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:1 pressure:0];
 			[NSApp postEvent:down atStart:NO];
 			[NSApp postEvent:up atStart:NO];
+			if ([cmd isEqualToString:@"dclick"]) {
+				// the second click of a double click
+				[NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:p modifierFlags:0 timestamp:now + 0.1 windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:2 pressure:1] atStart:NO];
+				[NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:p modifierFlags:0 timestamp:now + 0.15 windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:2 pressure:0] atStart:NO];
+			}
 		}
 		NSView *frame = [[w contentView] superview] ?: [w contentView];
 		sLastHit = [frame hitTest:[frame convertPoint:p fromView:nil]];
 		Log(@"%@ %@ in %@, hits %@ (app %@, window %@)", cmd, NSStringFromPoint(p), NSStringFromClass([w class]), [frame hitTest:[frame convertPoint:p fromView:nil]], [NSApp isActive] ? @"active" : @"inactive", [w isKeyWindow] ? @"key" : @"not key");
+	} else if ([cmd isEqualToString:@"selrow"] || [cmd isEqualToString:@"openrow"]) {
+		// synthetic clicks do not select table rows (the table's tracking asks
+		// the hardware): selects row N of the table under the last click, or
+		// the first table, and sends its action
+		NSView *v = sLastHit;
+		while (v && ![v isKindOfClass:[NSTableView class]])
+			v = [v superview];
+		if (!v) {
+			NSMutableArray *todo = [NSMutableArray array];
+			for (NSWindow *w in Windows())
+				if ([w contentView])
+					[todo addObject:[w contentView]];
+			while ([todo count] && !v) {
+				NSView *x = todo[0];
+				[todo removeObjectAtIndex:0];
+				if ([x isKindOfClass:[NSTableView class]])
+					v = x;
+				[todo addObjectsFromArray:[x subviews]];
+			}
+		}
+		NSTableView *t = (NSTableView *)v;
+		[t selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)[arg integerValue]] byExtendingSelection:NO];
+		SEL a = [cmd isEqualToString:@"openrow"] ? [t doubleAction] : [t action];   // openrow: a double click
+		if (a)
+			[NSApp sendAction:a to:[t target] from:t];
+		Log(@"selrow %@ in %@", arg, t ? NSStringFromClass([t class]) : @"(no table)");
+	} else if ([cmd isEqualToString:@"tables"]) {
+		// every table and outline view: rows and selection
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			if ([w contentView])
+				[todo addObject:[w contentView]];
+		while ([todo count]) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[NSTableView class]]) {
+				NSTableView *t = (NSTableView *)v;
+				Log(@"table %@ %p rows %ld selected %ld action %@ target %@", NSStringFromClass([t class]), t, (long)[t numberOfRows],
+					(long)[t selectedRow], NSStringFromSelector([t action]), [t target]);
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+	} else if ([cmd isEqualToString:@"lfr"]) {
+		// logs the next N line fragment rects text containers hand out
+		static int left;
+		static IMP orig;
+		left = [arg intValue];
+		SEL s = @selector(lineFragmentRectForProposedRect:atIndex:writingDirection:remainingRect:);
+		Method m = class_getInstanceMethod([NSTextContainer class], s);
+		if (!orig) {
+			orig = method_getImplementation(m);
+			method_setImplementation(m, imp_implementationWithBlock(^NSRect(NSTextContainer *tc, NSRect r, NSUInteger i, NSWritingDirection d, NSRect *rem) {
+				NSRect o = ((NSRect(*)(id, SEL, NSRect, NSUInteger, NSWritingDirection, NSRect *))orig)(tc, s, r, i, d, rem);
+				if (left > 0) {
+					left--;
+					Log(@"lfr %@ %@ i=%lu -> %@ rem %@", NSStringFromClass([tc class]), NSStringFromRect(r), (unsigned long)i,
+						NSStringFromRect(o), rem ? NSStringFromRect(*rem) : @"-");
+				}
+				return o;
+			}));
+			SEL s2 = NSSelectorFromString(@"_layoutLineFragmentStartingWithGlyphAtIndex:characterIndex:atPoint:renderingContext:");
+			Method m2 = class_getInstanceMethod([NSATSTypesetter class], s2);
+			IMP o2 = method_getImplementation(m2);
+			method_setImplementation(m2, imp_implementationWithBlock(^long(id ts, NSUInteger *g, NSUInteger *ci, NSPoint *p, id ctx) {
+				NSUInteger g0 = g ? *g : 99999, c0 = ci ? *ci : 99999;
+				NSPoint p0 = p ? *p : NSZeroPoint;
+				long r = ((long(*)(id, SEL, NSUInteger *, NSUInteger *, NSPoint *, id))o2)(ts, s2, g, ci, p, ctx);
+				if (left > 0)
+					Log(@"line g %lu->%lu c %lu->%lu p %@->%@ ret %ld (%p %p %p)", (unsigned long)g0, (unsigned long)(g ? *g : 0), (unsigned long)c0,
+						(unsigned long)(ci ? *ci : 0), NSStringFromPoint(p0), NSStringFromPoint(p ? *p : NSZeroPoint), r, g, ci, p);
+				return r;
+			}));
+			SEL s3 = @selector(getLineFragmentRect:usedRect:remainingRect:forStartingGlyphAtIndex:proposedRect:lineSpacing:paragraphSpacingBefore:paragraphSpacingAfter:);
+			Class tc = NSClassFromString(@"HSExtendedTypesetterATS");
+			Method m3 = tc ? class_getInstanceMethod(tc, s3) : NULL;
+			if (m3) {
+				IMP o3 = method_getImplementation(m3);
+				method_setImplementation(m3, imp_implementationWithBlock(^(id ts, NSRect *lf, NSRect *u, NSRect *rem, NSUInteger g, NSRect pr, CGFloat ls, CGFloat b, CGFloat a) {
+					if (left > 0)
+						Log(@"glfr in g %lu pr %@ %p %p %p", (unsigned long)g, NSStringFromRect(pr), lf, u, rem);
+					((void(*)(id, SEL, NSRect *, NSRect *, NSRect *, NSUInteger, NSRect, CGFloat, CGFloat, CGFloat))o3)(ts, s3, lf, u, rem, g, pr, ls, b, a);
+					if (left > 0)
+						Log(@"glfr g %lu pr %@ ls %g %g %g -> lf %@ used %@ rem %@", (unsigned long)g, NSStringFromRect(pr), ls, b, a,
+							lf ? NSStringFromRect(*lf) : @"-", u ? NSStringFromRect(*u) : @"-", rem ? NSStringFromRect(*rem) : @"-");
+				}));
+			}
+		}
 	} else if ([cmd isEqualToString:@"ftrace"]) {
 		// logs every translated function entered from here on (1) or stops (0)
 		int *v = dlsym(RTLD_DEFAULT, "xl_trace_on");
@@ -314,12 +410,33 @@ static void SkipAutomation(void)
 	}
 }
 
+// tracking loops ask the hardware whether the button is still down: while a
+// synthetic mouse-down is being handled, it is
+static NSUInteger PressedMouseButtons(id self, SEL _cmd)
+{
+	NSEventType t = [[NSApp currentEvent] type];
+	return t == NSEventTypeLeftMouseDown || t == NSEventTypeLeftMouseDragged ? 1 : 0;
+}
+
 __attribute__((constructor)) static void Start(void)
 {
 	const char *steps = getenv("WB_DRIVE");
 	if (steps == NULL)
 		return;
-	method_setImplementation(class_getInstanceMethod([NSView class], @selector(acceptsFirstMouse:)), (IMP)AcceptsFirstMouse);
+	method_setImplementation(class_getClassMethod([NSEvent class], @selector(pressedMouseButtons)), (IMP)PressedMouseButtons);
+	// clicks reach windows that are not key (the app is never activated):
+	// every class with its own -acceptsFirstMouse: accepts it
+	unsigned nc = 0;
+	Class *cl = objc_copyClassList(&nc);
+	for (unsigned i = 0; i < nc; i++) {
+		unsigned nm = 0;
+		Method *ms = class_copyMethodList(cl[i], &nm);
+		for (unsigned k = 0; k < nm; k++)
+			if (method_getName(ms[k]) == @selector(acceptsFirstMouse:))
+				method_setImplementation(ms[k], (IMP)AcceptsFirstMouse);
+		free(ms);
+	}
+	free(cl);
 	if (getenv("WB_SKIP_AUTOMATION"))
 		[[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillFinishLaunchingNotification object:nil queue:nil usingBlock:^(NSNotification *n) { SkipAutomation(); }];
 	sSteps = [[NSMutableArray alloc] init];

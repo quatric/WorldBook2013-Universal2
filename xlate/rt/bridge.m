@@ -519,7 +519,7 @@ static void call_ffi(XLCPU *c, XLBridge *b)
 	int nfix = b->n - 1;
 	char ctx[96];
 	for (int i = 0; i < nfix; i++) {
-		if (b->t[i + 1]->kind == '^' || b->t[i + 1]->kind == '{') {
+		if (b->t[i + 1]->kind == '^') {
 			snprintf(ctx, sizeof ctx, "%s.%d", b->name, i);
 			cb_ctx = ctx;
 		}
@@ -1053,8 +1053,12 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 	if (logsel == (const char *)1)
 		logsel = getenv("XL_LOGSEL");
 	int logit = xl_verbose > 5 || (logsel && strstr(sel_getName(m->sel), logsel));
-	if (logit && xl_verbose <= 5)
-		xl_log("msg [%s %s] self %p", class_getName(object_getClass(self)), sel_getName(m->sel), self);
+	if (logit && xl_verbose <= 5) {
+		char ks[40] = {0};
+		for (int i = 0; i < m->n && i < 39; i++)
+			ks[i] = m->t[i]->kind;
+		xl_log("msg [%s %s] self %p types %s", class_getName(object_getClass(self)), sel_getName(m->sel), self, ks);
+	}
 	if (logit)
 		for (int i = 3; i < m->n && i - 1 < n; i++)
 			if (m->t[i]->kind == '@') {
@@ -1109,6 +1113,13 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 	}
 	copy_out(&A);
 	set_ret(c, rt, rv, sret, 1);
+	if (logit)
+		for (int i = 3; i < m->n; i++)
+			if (m->t[i]->kind == 'P') {
+				uint32_t p = *(uint32_t *)GP(a0 + 4 * (i - 1));
+				xl_log("    arg %d: P%c %08x -> %08x %08x", i - 3, m->t[i]->sub->kind, p, p ? *(uint32_t *)GP(p) : 0,
+					p ? *(uint32_t *)GP(p + 4) : 0);
+			}
 	if (logit)
 		xl_log("    -> eax %08x", c->r[EAX]);
 	args_free(&A, n);

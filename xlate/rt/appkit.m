@@ -183,8 +183,55 @@ static BOOL xl_number_isEqualToString(NSNumber *self, SEL _cmd, NSString *s)
 	return [s isKindOfClass:[NSString class]] && [[self stringValue] isEqualToString:s];
 }
 
+// ---- text containers that keep state between line fragment requests ------------------------
+// HSExtendedTextContainer takes each answer from its layout manager's run state, and every
+// request advances that state. The typesetter of the time asked once per fragment; the current
+// one asks again for the same fragment to check it and, getting the next fragment instead,
+// starts over forever. A request repeating the previous one gets the previous answer.
+static IMP tc_lfr_orig;
+static struct {
+	id tc;
+	NSRect proposed, result, remaining;
+	NSUInteger index;
+	NSWritingDirection dir;
+} tc_last;
+
+static NSRect xl_tc_lineFragmentRect(NSTextContainer *self, SEL _cmd, NSRect proposed, NSUInteger index,
+	NSWritingDirection dir, NSRect *remaining)
+{
+	if (tc_last.tc == self && tc_last.index == index && tc_last.dir == dir && NSEqualRects(tc_last.proposed, proposed)) {
+		if (remaining)
+			*remaining = tc_last.remaining;
+		return tc_last.result;
+	}
+	NSRect rem = NSZeroRect;
+	NSRect r = ((NSRect (*)(id, SEL, NSRect, NSUInteger, NSWritingDirection, NSRect *))tc_lfr_orig)(self, _cmd, proposed,
+		index, dir, &rem);
+	if (remaining)
+		*remaining = rem;
+	tc_last.tc = self;
+	tc_last.proposed = proposed;
+	tc_last.index = index;
+	tc_last.dir = dir;
+	tc_last.result = r;
+	tc_last.remaining = rem;
+	return r;
+}
+
+static void stable_line_fragments(const char *cls)
+{
+	Class c = objc_getClass(cls);
+	SEL s = @selector(lineFragmentRectForProposedRect:atIndex:writingDirection:remainingRect:);
+	Method m = class_getInstanceMethod([NSTextContainer class], s);
+	if (!c || !m)
+		return;
+	tc_lfr_orig = method_getImplementation(m);
+	class_addMethod(c, s, (IMP)xl_tc_lineFragmentRect, method_getTypeEncoding(m));
+}
+
 void xl_appkit_hooks(void)
 {
+	stable_line_fragments("HSExtendedTextContainer");
 	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
 		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");
 	add_noop("HSArticleView", "layoutManagerDidInvalidateLayout:");
