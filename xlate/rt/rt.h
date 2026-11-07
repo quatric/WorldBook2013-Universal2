@@ -135,3 +135,6 @@ uint32_t xl_data_symbol(const char *name);
 
 // a guest category replaced a host method (appkit.m keeps the ones it needs)
 void xl_host_method_replaced(Class cls, SEL sel, IMP orig, IMP guest);
+
+// bridge type for a host type encoding (bridge.m)
+XLType *xl_from_host_enc(const char *e);

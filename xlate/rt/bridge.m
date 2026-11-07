@@ -718,7 +718,9 @@ static XLType *T(const char *s)
 }
 
 // host encoding -> bridge type for methods the SDK table does not know
-static XLType *from_host_enc(const char *e)
+XLType *xl_from_host_enc(const char *e);
+static XLType *from_host_enc(const char *e) { return xl_from_host_enc(e); }
+XLType *xl_from_host_enc(const char *e)
 {
 	while (*e && strchr("rnNoORV", *e))
 		e++;
@@ -741,8 +743,23 @@ static XLType *from_host_enc(const char *e)
 	case ':': return T(":");
 	case '*': return T("*");
 	case '^':
+		// out-parameters whose width differs on the guest are converted both ways
 		if (e[1] == '@')
 			return T("P@");
+		if (e[1] == 'q')
+			return T("Pl");
+		if (e[1] == 'Q')
+			return T("PL");
+		if (e[1] == 'd')
+			return T("PF");        // CGFloat *
+		if (!strncmp(e + 1, "{CGPoint", 8))
+			return T("P{CGPoint}");
+		if (!strncmp(e + 1, "{CGRect", 7))
+			return T("P{CGRect}");
+		if (!strncmp(e + 1, "{CGSize", 7))
+			return T("P{CGSize}");
+		if (!strncmp(e + 1, "{_NSRange", 9))
+			return T("P{_NSRange}");
 		return T("*");
 	case '{': {
 		if (!strncmp(e, "{CGRect", 7))

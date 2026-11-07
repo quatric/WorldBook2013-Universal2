@@ -383,6 +383,23 @@ int xl_method_sig(SEL sel, Class cls, int meta, const char *guest_enc, XLType **
 			if (ok && sdk[i - 2]->gsize == g[i]->gsize && (g[i]->kind != '{' || sdk[i - 2]->kind == '{'))
 				t[i] = sdk[i - 2];
 		}
+		// a guest override of a method the SDK does not declare (a private
+		// one): pointers take the host method's pointee widths
+		Method hm = !mt && cls ? (meta ? class_getClassMethod(class_getSuperclass(cls), sel)
+			: class_getInstanceMethod(class_getSuperclass(cls), sel)) : NULL;
+		if (hm && !xl_in_window((void *)method_getImplementation(hm)) && method_getNumberOfArguments(hm) == (unsigned)ng - 1) {
+			for (int i = 3; i < ng && i < max; i++) {
+				if (g[i]->kind != '*')
+					continue;
+				char a[256];
+				method_getArgumentType(hm, (unsigned)i - 1, a, sizeof a);
+				XLType *h = xl_from_host_enc(a);
+				if (h->kind == 'P')
+					t[i] = h;
+				if (xl_verbose > 1)
+					xl_log("  %s arg %d: host %s -> %c", sel_getName(sel), i - 3, a, t[i]->kind);
+			}
+		}
 		return ng;
 	}
 	if (mt && ns == nargs + 1) {
@@ -403,7 +420,16 @@ static void host_enc(XLType *t, char *out, size_t n)
 	case 'l': k = "q"; break;
 	case 'L': k = "Q"; break;
 	case 'F': k = "d"; break;
-	case 'p': case 'h': case 'P': k = "^v"; break;
+	case 'P':
+		// keep the pointee: the encoding is read back for super calls
+		if (t->sub && strchr("lLF@{", t->sub->kind) && n > 1) {
+			out[0] = '^';
+			host_enc(t->sub, out + 1, n - 1);
+			return;
+		}
+		k = "^v";
+		break;
+	case 'p': case 'h': k = "^v"; break;
 	case '^': k = "^?"; break;
 	case '{': {
 		size_t o = (size_t)snprintf(out, n, "{%s=", t->name);
@@ -497,14 +523,29 @@ static void closure_entry(ffi_cif *cif, void *ret, void **args, void *ud)
 		*(uint32_t *)GP(o) = sret;
 		o += 4;
 	}
+	// pointers to values whose width differs (NSUInteger *, NSPoint *, id *)
+	// point at guest copies, written back after the call
+	uint32_t tmp[32] = {0};
 	for (int i = 1; i < m->n; i++) {
-		xl_h2g(m->t[i], args[i - 1], o);
-		o += (m->t[i]->gsize + 3) & ~3u;
+		XLType *t = m->t[i];
+		void *hp = t->kind == 'P' ? *(void **)args[i - 1] : NULL;
+		if (hp && t->sub && strchr("lLF@{", t->sub->kind) && !xl_in_window(hp)) {
+			tmp[i] = xl_malloc(t->sub->gsize);
+			xl_h2g(t->sub, hp, tmp[i]);
+			*(uint32_t *)GP(o) = tmp[i];
+		} else
+			xl_h2g(t, args[i - 1], o);
+		o += (t->gsize + 3) & ~3u;
 	}
 	if (xl_verbose > 3)
 		xl_log("-> %s", xl_name_at(m->guest));
 	XLResult res;
 	xl_guest_run(c, m->guest, sp, &res);
+	for (int i = 1; i < m->n; i++)
+		if (tmp[i]) {
+			xl_g2h(m->t[i]->sub, tmp[i], *(void **)args[i - 1]);
+			xl_free(tmp[i]);
+		}
 	ret_from_guest(rt, &res, sret, ret);
 	if (sret)
 		xl_free(sret);

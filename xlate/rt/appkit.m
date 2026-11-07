@@ -152,8 +152,22 @@ void xl_host_method_replaced(Class cls, SEL sel, IMP orig, IMP guest)
 	}
 }
 
+// ---- NSMovie -------------------------------------------------------------------------------
+// NSMovie wrapped a QuickTime Movie; the class remains without its methods.
+// Movies are not available yet: initialisers fail.
+static id xl_movie_initWithURL(id self, SEL _cmd, NSURL *url, BOOL byRef)
+{
+	if (xl_verbose > 0)
+		xl_log("NSMovie %s: movies not available", [[url absoluteString] UTF8String]);
+	[self release];
+	return nil;
+}
+
 void xl_appkit_hooks(void)
 {
+	Class movie = objc_getClass("NSMovie");
+	if (movie && !class_getInstanceMethod(movie, @selector(initWithURL:byReference:)))
+		class_addMethod(movie, @selector(initWithURL:byReference:), (IMP)xl_movie_initWithURL, "@@:@c");
 	orig_drawingToScreen = method_setImplementation(class_getClassMethod([NSGraphicsContext class],
 		@selector(currentContextDrawingToScreen)), (IMP)xl_drawingToScreen);
 	Class vc = [NSView class];
