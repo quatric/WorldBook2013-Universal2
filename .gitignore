@@ -1,0 +1,11 @@
+# Original application (input) and generated outputs
+game/
+build/
+analysis/
+
+__pycache__/
+*.o
+.DS_Store
+
+# Local tooling
+.codesight/
