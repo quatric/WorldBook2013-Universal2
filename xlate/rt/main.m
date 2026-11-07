@@ -32,8 +32,12 @@ int main(int argc, char **argv, char **envp)
 		[app sharedApplication];
 		xl_refresh_nsapp();
 	}
-	XLImage *exe = xl_image_named("wb");
-	uint32_t m = find_func(exe, "_main");
+	// the executable is the image without an install name
+	XLImage *exe = NULL;
+	for (XLImage *im = xl_images; im; im = im->next)
+		if (!im->install[0])
+			exe = im;
+	uint32_t m = exe ? find_func(exe, "_main") : 0;
 	if (!m)
 		xl_die("no _main in the executable");
 	int envc = 0;

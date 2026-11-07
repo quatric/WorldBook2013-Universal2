@@ -1207,6 +1207,7 @@ static char bytes_key;
 @public
 	uint32_t g;
 	size_t n;
+	const void *hp;     // the host buffer it shows
 }
 @end
 @implementation XLRemapOwner
@@ -1225,23 +1226,22 @@ static void spec_bytes(XLCPU *c, MsgSig *m, id self, uint32_t a0)
 	uint32_t g = 0;
 	if (p) {
 		XLRemapOwner *own = objc_getAssociatedObject(self, &bytes_key);
-		if (own && own->n == len && (const uint8_t *)XG + own->g != NULL) {
-			// still valid if the host buffer did not move
-			uint32_t off = (uint32_t)((uintptr_t)p & (vm_page_size - 1));
-			if ((own->g & (vm_page_size - 1)) == off && !memcmp(GP(own->g), p, len < 16 ? len : 16))
-				g = own->g;
-		}
+		if (own && own->n == len && own->hp == p)
+			g = own->g;     // the host buffer did not move
+		// a mutable object's buffer is written through: always share it; a short
+		// immutable one is copied (remapping takes at least a page of the window)
+		BOOL share = len >= 256 || [self isKindOfClass:[NSMutableData class]];
 		if (!g) {
-			if (len < 256) {
+			if (!share) {
 				g = xl_malloc((uint32_t)len + 1);
 				memcpy(GP(g), p, len);
-				// short buffers are copies; mutable callers that write get a fresh copy each time
 			} else {
 				g = xl_remap(p, len);
 				if (g) {
 					own = [XLRemapOwner new];
 					own->g = g;
 					own->n = len;
+					own->hp = p;
 					objc_setAssociatedObject(self, &bytes_key, own, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 					[own release];
 				}

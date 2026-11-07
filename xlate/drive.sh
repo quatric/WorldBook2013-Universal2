@@ -1,10 +1,11 @@
 #!/bin/sh
 # Runs the built app with the test driver (tools/driver.m) doing the steps given
 # as arguments (or on stdin), then quits it and prints the runtime's log.
-# usage: drive.sh <seconds to run> 'wait 8; windows; shot /tmp/a.png'
+# usage: [APP=build/X.app] drive.sh <seconds to run> 'wait 8; windows; shot /tmp/a.png'
 cd "$(dirname "$0")/.."
-APP="build/2013 World Book.app"
-EXE="$APP/Contents/MacOS/2013 World Book"
+# APP picks another translated bundle (default: the encyclopedia)
+APP=${APP:-"build/2013 World Book.app"}
+EXE="$APP/Contents/MacOS/$(plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")"
 [ build/driver.dylib -nt tools/driver.m ] || clang -dynamiclib -fobjc-arc -framework Cocoa -framework AVFoundation -framework CoreMedia -o build/driver.dylib tools/driver.m
 STEPS=${2:-$(cat)}
 WB_DRIVE="$STEPS" DYLD_INSERT_LIBRARIES="$PWD/build/driver.dylib" XL_VERBOSE=${XL_VERBOSE:-0} "$EXE" -ApplePersistenceIgnoreState YES > build/run.log 2>&1 &
