@@ -5,7 +5,7 @@
 XL_LIBS="-framework AppKit -framework Foundation -framework Carbon -framework OpenGL -framework WebKit \
 	-framework AudioToolbox -framework AVFoundation -framework AudioUnit -framework CoreAudio -framework Security \
 	-framework SystemConfiguration -framework IOKit -framework ApplicationServices -framework Accelerate \
-	-framework CoreServices -framework QuartzCore -framework ImageIO -framework PreferencePanes -lsqlite3 -lz"
+	-framework CoreServices -framework QuartzCore -framework ImageIO -framework PreferencePanes -framework UniformTypeIdentifiers -lsqlite3 -lz"
 
 # compile_lifted <dir> <include dir> <header>...: generated C whose object
 # is older than the source or any of the headers

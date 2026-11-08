@@ -796,7 +796,9 @@ static void xl_setValueForUndefinedKey(id self, SEL _cmd, id value, NSString *ke
 	uint8_t *p = GP(xl_hobj(self) + off);
 	switch (*t) {
 	case '@': case '#': *(uint32_t *)p = xl_hobj(value); break;    // outlets are not retained
-	case 'c': case 'C': case 'B': *p = [value charValue]; break;
+	case 'c': case 'C': case 'B':   // strings ("YES", from plists) have no -charValue
+		*p = [value respondsToSelector:@selector(charValue)] ? [value charValue] : [value boolValue];
+		break;
 	case 's': case 'S': *(int16_t *)p = [value shortValue]; break;
 	case 'i': case 'I': case 'l': case 'L': *(int32_t *)p = [value intValue]; break;
 	case 'f': *(float *)p = [value floatValue]; break;
@@ -830,6 +832,18 @@ static id xl_valueForUndefinedKey(id self, SEL _cmd, NSString *key)
 	case 'd': return [NSNumber numberWithDouble:*(double *)p];
 	case 'q': return [NSNumber numberWithLongLong:*(int64_t *)p];
 	case 'Q': return [NSNumber numberWithUnsignedLongLong:*(uint64_t *)p];
+	case '{': {   // the i386 forms of the Foundation geometry structs
+		const float *f = (const float *)p;
+		if (!strncmp(t, "{_NSRange=", 10))
+			return [NSValue valueWithRange:NSMakeRange(((uint32_t *)p)[0], ((uint32_t *)p)[1])];
+		if (!strncmp(t, "{_NSRect=", 9))
+			return [NSValue valueWithRect:NSMakeRect(f[0], f[1], f[2], f[3])];
+		if (!strncmp(t, "{_NSPoint=", 10))
+			return [NSValue valueWithPoint:NSMakePoint(f[0], f[1])];
+		if (!strncmp(t, "{_NSSize=", 9))
+			return [NSValue valueWithSize:NSMakeSize(f[0], f[1])];
+		break;
+	}
 	}
 	return nil;
 }

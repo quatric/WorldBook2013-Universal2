@@ -12,6 +12,7 @@
 // WB_DRIVE_STEPS=1 logs each step as it starts.
 #import <Cocoa/Cocoa.h>
 #import <AVFoundation/AVFoundation.h>
+#import <WebKit/WebKit.h>
 #include <dlfcn.h>
 #include <objc/runtime.h>
 
@@ -377,6 +378,84 @@ static void Run(NSString *aLine)
 					[NSApp sendAction:[it action] to:[it target] from:it];
 				}
 		Log(@"tbclick %@: %@", arg, found ? @"ok" : @"not found");
+	} else if ([cmd isEqualToString:@"kvc"]) {
+		// kvc <view class> <key>...: the values of the first such view in the windows
+		NSArray *w = [arg componentsSeparatedByString:@" "];
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *win in Windows())
+			[todo addObject:[win contentView]];
+		while ([todo count]) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([NSStringFromClass([v class]) isEqualToString:w[0]]) {
+				for (NSString *k in [w subarrayWithRange:NSMakeRange(1, w.count - 1)]) {
+					id val = nil;
+					// key/sub1,sub2: an array's elements, each with those keys
+					NSArray *ks = [k componentsSeparatedByString:@"/"];
+					@try { val = [v valueForKey:ks[0]]; } @catch (id e) { val = e; }
+					if (ks.count > 1 && [val isKindOfClass:[NSArray class]]) {
+						Log(@"kvc %@.%@: %lu", w[0], ks[0], (unsigned long)[val count]);
+						for (id el in val) {
+							NSMutableString *s = [NSMutableString stringWithFormat:@"  %@", NSStringFromClass([el class])];
+							if ([ks[1] isEqualToString:@"*"]) {
+								Log(@"%@ %@", s, [[el description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "]);
+								continue;
+							}
+							for (NSString *sk in [ks[1] componentsSeparatedByString:@","]) {
+								id sv;
+								@try { sv = [el valueForKeyPath:sk]; } @catch (id e) { sv = @"?"; }
+								[s appendFormat:@" %@=%@", sk, sv];
+							}
+							Log(@"%@", s);
+						}
+					} else
+						Log(@"kvc %@.%@ = %@", w[0], k, val);
+				}
+				break;
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+	} else if ([cmd isEqualToString:@"webdump"]) {
+		// webdump [bytes]: every web view's frames, their URLs and the start of their source
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		NSUInteger n = [arg integerValue] ?: 600;
+		while ([todo count]) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[WebView class]]) {
+				NSMutableArray *frames = [NSMutableArray arrayWithObject:[(WebView *)v mainFrame]];
+				while ([frames count]) {
+					WebFrame *f = frames[0];
+					[frames removeObjectAtIndex:0];
+					[frames addObjectsFromArray:[f childFrames]];
+					NSData *d = [[f dataSource] data];
+					NSString *s = d ? [[NSString alloc] initWithData:[d subdataWithRange:NSMakeRange(0, MIN(n, d.length))] encoding:NSISOLatin1StringEncoding] : @"(none)";
+					NSMutableString *hex = [NSMutableString string];
+					for (NSUInteger i = 0; i < MIN(48u, d.length); i++)
+						[hex appendFormat:@"%02x", ((const uint8_t *)d.bytes)[i]];
+					Log(@"web frame %@ %@ %lu bytes, mime %@: %@\n%@", [f name], [[[f dataSource] request] URL], (unsigned long)d.length,
+						[[[f dataSource] response] MIMEType], hex, [s stringByReplacingOccurrencesOfString:@"\0" withString:@"."]);
+				}
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+	} else if ([cmd isEqualToString:@"webfail"]) {
+		// webfail <class>: logs the errors of its frame load delegate methods
+		Class c = NSClassFromString(arg);
+		for (NSString *s in @[@"webView:didFailProvisionalLoadWithError:forFrame:", @"webView:didFailLoadWithError:forFrame:"]) {
+			Method m = c ? class_getInstanceMethod(c, NSSelectorFromString(s)) : NULL;
+			if (!m)
+				continue;
+			IMP orig = method_getImplementation(m);
+			SEL sel = NSSelectorFromString(s);
+			method_setImplementation(m, imp_implementationWithBlock(^(id self, WebView *wv, NSError *e, WebFrame *f) {
+				Log(@"%@ %@ (url %@)", s, e, [[[f provisionalDataSource] ?: [f dataSource] request] URL]);
+				((void (*)(id, SEL, id, id, id))orig)(self, sel, wv, e, f);
+			}));
+		}
+		Log(@"webfail %@: %@", arg, c ? @"hooked" : @"no class");
 	} else if ([cmd isEqualToString:@"ftrace"]) {
 		// logs every translated function entered from here on (1) or stops (0)
 		int *v = dlsym(RTLD_DEFAULT, "xl_trace_on");

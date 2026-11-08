@@ -1,6 +1,7 @@
 // AppKit behaviour the 2013 code relies on that current AppKit dropped.
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "rt.h"
 
 // ---- drawing into windows that are not on screen ------------------------------------------
@@ -588,6 +589,36 @@ static void xl_help_openAnchor(id self, SEL _cmd, NSString *anchor, NSString *bo
 	xl_help_anchor(book, anchor);
 }
 
+// ---- responses without a type ------------------------------------------------------------
+// The apps' own URL protocols (Surf The Ages: stm://SurfTheAges/index.htm)
+// answer with an NSURLResponse of no MIME type. WebKit used to guess one from
+// the extension; today it cannot show such a response and stops the load
+// ("Frame load interrupted", a blank page). A response made with no type for
+// a URL outside the standard schemes gets the type of its extension.
+static IMP orig_response_init;
+
+static id xl_response_init(NSURLResponse *self, SEL _cmd, NSURL *url, NSString *mime, NSInteger length, NSString *enc)
+{
+	static NSSet *standard;
+	if (!standard)
+		standard = [[NSSet alloc] initWithObjects:@"http", @"https", @"file", @"data", @"about", @"ftp", nil];
+	if (!mime && url && ![standard containsObject:[[url scheme] lowercaseString]]) {
+		NSString *ext = [[url path] pathExtension];
+		mime = ext.length ? [[UTType typeWithFilenameExtension:ext] preferredMIMEType] : nil;
+		if (!mime)
+			mime = @"text/html";   // the protocols serve pages, and pages link the rest
+		if (xl_verbose)
+			xl_log("response type for %s: %s", [[url absoluteString] UTF8String], [mime UTF8String]);
+	}
+	return ((id (*)(id, SEL, NSURL *, NSString *, NSInteger, NSString *))orig_response_init)(self, _cmd, url, mime, length, enc);
+}
+
+static void typed_responses(void)
+{
+	orig_response_init = method_setImplementation(class_getInstanceMethod([NSURLResponse class],
+		@selector(initWithURL:MIMEType:expectedContentLength:textEncodingName:)), (IMP)xl_response_init);
+}
+
 int xl_help_in_browser = -1;   // Help Viewer missing (set at launch)
 
 static void help_viewer_gone(void)
@@ -606,6 +637,7 @@ static void help_viewer_gone(void)
 void xl_appkit_hooks(void)
 {
 	help_viewer_gone();
+	typed_responses();
 	clipping_old_boxes();
 	translated_bundles();
 	fitting_home_layout();

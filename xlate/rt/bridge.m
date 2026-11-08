@@ -1225,6 +1225,7 @@ void xl_msgsend(XLCPU *c, int kind)
 		return;
 	}
 	id self = (id)xl_p(selfh);
+	xl_bytes_flush(self);
 	if (!self) {
 		uint32_t ret = *(uint32_t *)GP(c->r[ESP]);
 		(void)ret;
@@ -1332,22 +1333,48 @@ static char bytes_key;
 // with the object and synced both ways on every -bytes / -mutableBytes: what the
 // guest wrote into it since the last call reaches a mutable object's buffer, what
 // the host changed reaches the copy (the host wins when both did).
+// Guest writes into a mutable object's copy also reach its buffer when the
+// object next goes to the host (xl_bytes_flush): zlib's uncompress into
+// -mutableBytes, then the data handed to WebKit (Surf The Ages' pages).
 @interface XLBytesCopy : NSObject {
 @public
 	uint32_t g;
 	size_t n;
 	const void *hp;
 	uint8_t *snap;      // contents at the last sync
+	id owner;           // the mutable object (not retained), when tracked
 }
 @end
+
+static XLMap mutable_copies;   // mutable object -> its XLBytesCopy
+int xl_bytes_pending;          // how many there are
+
 @implementation XLBytesCopy
 - (void)dealloc
 {
+	if (owner) {
+		xl_map_del(&mutable_copies, (uint64_t)(uintptr_t)owner);
+		__atomic_sub_fetch(&xl_bytes_pending, 1, __ATOMIC_RELAXED);
+	}
 	xl_free(g);
 	free(snap);
 	[super dealloc];
 }
 @end
+
+void xl_bytes_flush_slow(id o)
+{
+	XLBytesCopy *cp = (XLBytesCopy *)(uintptr_t)xl_map_get(&mutable_copies, (uint64_t)(uintptr_t)o);
+	if (!cp)
+		return;
+	uint8_t *gb = GP(cp->g);
+	if (!memcmp(gb, cp->snap, cp->n))
+		return;
+	if ([(NSMutableData *)o length] != cp->n || [(NSMutableData *)o mutableBytes] != cp->hp)
+		return;     // the host moved or resized the buffer: the copy is stale
+	memcpy((void *)cp->hp, gb, cp->n);
+	memcpy(cp->snap, gb, cp->n);
+}
 
 static uint32_t bytes_copy(id self, const void *p, NSUInteger len)
 {
@@ -1373,6 +1400,15 @@ static uint32_t bytes_copy(id self, const void *p, NSUInteger len)
 	memcpy(GP(cp->g), p, len);
 	memcpy(cp->snap, p, len);
 	objc_setAssociatedObject(self, &copy_key, cp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+	if ([self isKindOfClass:[NSMutableData class]]) {
+		XLBytesCopy *old = (XLBytesCopy *)(uintptr_t)xl_map_get(&mutable_copies, (uint64_t)(uintptr_t)self);
+		if (old)
+			old->owner = nil;   // replaced: released below by the association
+		else
+			__atomic_add_fetch(&xl_bytes_pending, 1, __ATOMIC_RELAXED);
+		cp->owner = self;
+		xl_map_put(&mutable_copies, (uint64_t)(uintptr_t)self, (uint64_t)(uintptr_t)cp);
+	}
 	[cp release];
 	return cp->g;
 }

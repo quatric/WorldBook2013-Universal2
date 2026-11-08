@@ -196,7 +196,8 @@ void xl_g2h(XLType *t, uint32_t g, void *h)
 	case 'L': { uint32_t v; memcpy(&v, src, 4); *(uint64_t *)h = xl_ulong_in(v); break; }
 	case 'q': case 'Q': case 'd': memcpy(h, src, 8); break;
 	case 'F': { float v; memcpy(&v, src, 4); *(double *)h = v; break; }
-	case '@': case 'p': case 'h': { uint32_t v; memcpy(&v, src, 4); *(void **)h = xl_p(v); break; }
+	case '@': { uint32_t v; memcpy(&v, src, 4); *(void **)h = xl_p(v); xl_bytes_flush(*(id *)h); break; }
+	case 'p': case 'h': { uint32_t v; memcpy(&v, src, 4); *(void **)h = xl_p(v); break; }
 	case ':': { uint32_t v; memcpy(&v, src, 4); *(SEL *)h = v ? xl_hsel(v) : NULL; break; }
 	case '*': { uint32_t v; memcpy(&v, src, 4); *(void **)h = v ? GP(v) : NULL; break; }
 	case '^': { uint32_t v; memcpy(&v, src, 4); *(void **)h = xl_fnptr_g2h(v, t); break; }

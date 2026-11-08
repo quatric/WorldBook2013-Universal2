@@ -54,6 +54,10 @@ static inline int xl_in_window(const void *p) { return (const uint8_t *)p >= XG 
 uint32_t xl_h(const void *p);         // any host pointer (no class checks)
 uint32_t xl_hobj(id o);               // object: translated instances get their shadow
 void *xl_p(uint32_t h);               // handle to host pointer
+extern int xl_bytes_pending;
+void xl_bytes_flush_slow(id o);
+// guest writes to a mutable data's -mutableBytes copy, before the host sees it
+static inline void xl_bytes_flush(id o) { if (xl_bytes_pending && o) xl_bytes_flush_slow(o); }
 void *xl_p_quiet(uint32_t h);
 #define XL_ID(h) ((id)xl_p(h))
 void xl_bind_handle(uint32_t h, const void *p);   // static handle (class struct, cfstring, ...)

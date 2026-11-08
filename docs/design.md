@@ -149,3 +149,27 @@ runtime answers Apple Help itself (`AHRegisterHelpBook`, `AHGotoPage`,
 holding the anchor, or the book's table of contents) opens in the default
 browser. What's New? is such a call and nothing else. `XL_HELP_BROWSER=0/1`
 forces either way; `XL_HELP_DRYRUN=1` logs the page instead of opening it.
+
+## Data the guest fills in
+
+`-mutableBytes` of a short buffer gives the guest a copy in its heap (see
+`spec_bytes`); the guest's writes used to reach the real buffer only at the
+next `-bytes`. A mutable data object is now brought up to date whenever it
+next goes to host code, as a receiver or an argument. Surf The Ages
+uncompresses each page into such a buffer and hands it straight to WebKit,
+which got zeros: a blank page.
+
+## Surf The Ages
+
+Its pages come from an `NSURLProtocol` (`stm://SurfTheAges/...`) whose
+responses carry no MIME type. Old WebKit guessed one from the extension;
+today's stops the load ("Frame load interrupted"). A response made without a
+type, for a URL outside the standard schemes, gets its extension's type.
+
+## Plist values for BOOL instance variables
+
+Layout plists give BOOLs as strings ("YES"), and `NSString` has no
+`-charValue`: those keys raised and were skipped, leaving
+`useTextureRectangle` and the like at their defaults, and the home screen's
+showcase then textured some photos wrongly (a photo repeated across its card,
+cards seeming to overlap). Strings now set them through `-boolValue`.
