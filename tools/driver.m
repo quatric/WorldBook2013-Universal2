@@ -16,6 +16,7 @@
 #include <dlfcn.h>
 #include <objc/runtime.h>
 
+
 static NSMutableArray *sSteps;
 static NSView *sLastHit;     // the view the last `mouse` landed on
 
@@ -456,6 +457,12 @@ static void Run(NSString *aLine)
 			}));
 		}
 		Log(@"webfail %@: %@", arg, c ? @"hooked" : @"no class");
+	} else if ([cmd isEqualToString:@"gltrace"]) {
+		// logs the guest's OpenGL calls with their argument words (1) or stops (0)
+		int *v = dlsym(RTLD_DEFAULT, "xl_gl_trace");
+		if (v)
+			*v = [arg intValue];
+		Log(@"gltrace %@%@", arg, v ? @"" : @" (no runtime)");
 	} else if ([cmd isEqualToString:@"ftrace"]) {
 		// logs every translated function entered from here on (1) or stops (0)
 		int *v = dlsym(RTLD_DEFAULT, "xl_trace_on");

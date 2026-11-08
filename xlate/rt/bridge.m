@@ -698,6 +698,7 @@ void *xl_resolve_import(const char *name)
 	return b;
 }
 
+int xl_gl_trace;
 void xl_ccall(XLCPU *c, XLImport *imp)
 {
 	XLBridge *b = imp->impl;
@@ -707,6 +708,52 @@ void xl_ccall(XLCPU *c, XLImport *imp)
 	}
 	if (xl_verbose > 5)
 		xl_log("call %s", b->name);
+	if (xl_gl_trace && !strncmp(b->name, "_gl", 3)) {
+		// raw argument words, floats shown as such too (driver step gltrace)
+		char buf[256];
+		int o = snprintf(buf, sizeof buf, "GL %s", b->name + 1);
+		for (int i = 0; i < 8 && o < 200; i++) {
+			uint32_t w = xl_arg(c, i);
+			float f;
+			memcpy(&f, &w, 4);
+			o += snprintf(buf + o, sizeof buf - o, " %x(%g)", w, f);
+		}
+		fprintf(stderr, "%s\n", buf);
+		static uint32_t vp, vstride, tp, tstride;
+		if (!strcmp(b->name, "_glVertexPointer")) {
+			vp = xl_arg(c, 3);
+			vstride = xl_arg(c, 2);
+		} else if (!strcmp(b->name, "_glTexCoordPointer") && xl_arg(c, 3) != tp) {
+			tp = xl_arg(c, 3);
+			tstride = xl_arg(c, 2);
+		} else if (!strcmp(b->name, "_glDrawRangeElementsEXT") && vp && xl_arg(c, 5)) {
+			uint32_t *ix = (uint32_t *)GP(xl_arg(c, 5));
+			uint32_t n = xl_arg(c, 3);
+			float x0 = 1e30, x1 = -1e30, y0 = 1e30, y1 = -1e30, s0 = 1e30, s1 = -1e30, t0 = 1e30, t1 = -1e30;
+			for (uint32_t i = 0; i < n; i++) {
+				float *v = (float *)GP(vp + ix[i] * (vstride ? vstride : 8));
+				float *t = (float *)GP(tp + ix[i] * (tstride ? tstride : 8));
+				x0 = fminf(x0, v[0]); x1 = fmaxf(x1, v[0]); y0 = fminf(y0, v[1]); y1 = fmaxf(y1, v[1]);
+				s0 = fminf(s0, t[0]); s1 = fmaxf(s1, t[0]); t0 = fminf(t0, t[1]); t1 = fmaxf(t1, t[1]);
+			}
+			fprintf(stderr, "GLBOX n=%u first=%u pos x %g..%g y %g..%g tex s %g..%g t %g..%g vstride %u tstride %u\n", n, ix[0], x0, x1, y0, y1, s0, s1, t0, t1, vstride, tstride);
+		}
+	}
+	if (xl_gl_trace && (!strncmp(b->name, "_NSIntersection", 15) || !strcmp(b->name, "_NSInsetRect") || !strcmp(b->name, "_ceilf"))) {
+		uint32_t a[10];
+		for (int i = 0; i < 10; i++)
+			a[i] = xl_arg(c, i);
+		b->call(c, b);
+		float f[10];
+		memcpy(f, a, sizeof f);
+		fprintf(stderr, "NSC %s args %x %x %x %x %x %x %x %x %x (%g %g %g %g %g %g %g %g) -> eax %x edx %x", b->name + 1, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], c->r[EAX], c->r[EDX]);
+		if (strcmp(b->name, "_NSIntersectionRange") && strcmp(b->name, "_ceilf") && a[0]) {
+			float *r = (float *)GP(a[0]);
+			fprintf(stderr, " sret %g %g %g %g", r[0], r[1], r[2], r[3]);
+		}
+		fprintf(stderr, "\n");
+		return;
+	}
 	b->call(c, b);
 }
 
