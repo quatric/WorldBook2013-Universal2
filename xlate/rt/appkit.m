@@ -1,6 +1,7 @@
 // AppKit behaviour the 2013 code relies on that current AppKit dropped.
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "rt.h"
 
@@ -252,6 +253,9 @@ static NSRect xl_screen_frame(NSScreen *self, SEL _cmd)
 	NSRect v = [self visibleFrame];
 	choosing_layout = saved;
 	v.size.height += 22;
+	const char *forced = getenv("XL_LAYOUT_SCREEN");   // tests: WxH picks another screen's layout
+	if (forced)
+		sscanf(forced, "%lfx%lf", &v.size.width, &v.size.height);
 	if (xl_verbose > 0)
 		xl_log("home screen layout for %gx%g", v.size.width, v.size.height);
 	return v;
@@ -608,7 +612,7 @@ static id xl_response_init(NSURLResponse *self, SEL _cmd, NSURL *url, NSString *
 		if (!mime)
 			mime = @"text/html";   // the protocols serve pages, and pages link the rest
 		if (xl_verbose)
-			xl_log("response type for %s: %s", [[url absoluteString] UTF8String], [mime UTF8String]);
+			xl_log("response type for %s: %s (length %ld)", [[url absoluteString] UTF8String], [mime UTF8String], (long)length);
 	}
 	return ((id (*)(id, SEL, NSURL *, NSString *, NSInteger, NSString *))orig_response_init)(self, _cmd, url, mime, length, enc);
 }
@@ -634,10 +638,51 @@ static void help_viewer_gone(void)
 		(IMP)xl_help_openAnchor);
 }
 
+// Surf The Ages pages start a sound with <embed src="x.wav" autostart>. The
+// encyclopedia's frame load delegate plays a .wav or .mov a frame starts
+// loading itself and stops the web view; a plug-in used to take the embed, but
+// WebKit now loads it into a subframe, so the delegate stopped the whole page
+// and the pictures still loading never came. For a subframe, only that frame stops.
+static __thread id media_subframe;
+static IMP orig_provisional, orig_stopLoading;
+
+static void xl_webview_stopLoading(id self, SEL _cmd, id sender)
+{
+	if (media_subframe) {
+		((void (*)(id, SEL))objc_msgSend)(media_subframe, @selector(stopLoading));
+		return;
+	}
+	((void (*)(id, SEL, id))orig_stopLoading)(self, _cmd, sender);
+}
+
+static void xl_provisional(id self, SEL _cmd, id webView, id frame)
+{
+	if (!orig_stopLoading) {
+		Class wv = objc_getClass("WebView");
+		Method m = wv ? class_getInstanceMethod(wv, @selector(stopLoading:)) : NULL;
+		if (m)
+			orig_stopLoading = method_setImplementation(m, (IMP)xl_webview_stopLoading);
+	}
+	id main = ((id (*)(id, SEL))objc_msgSend)(webView, @selector(mainFrame));
+	id saved = media_subframe;
+	media_subframe = frame != main ? frame : nil;
+	((void (*)(id, SEL, id, id))orig_provisional)(self, _cmd, webView, frame);
+	media_subframe = saved;
+}
+
+static void subframe_media(const char *cls)
+{
+	Class c = objc_getClass(cls);
+	Method m = c ? class_getInstanceMethod(c, @selector(webView:didStartProvisionalLoadForFrame:)) : NULL;
+	if (m)
+		orig_provisional = method_setImplementation(m, (IMP)xl_provisional);
+}
+
 void xl_appkit_hooks(void)
 {
 	help_viewer_gone();
 	typed_responses();
+	subframe_media("STMController");
 	clipping_old_boxes();
 	translated_bundles();
 	fitting_home_layout();

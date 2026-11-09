@@ -11,14 +11,41 @@
 // Buttons, matrix cells and menu items are found by title in all windows.
 // WB_DRIVE_STEPS=1 logs each step as it starts.
 #import <Cocoa/Cocoa.h>
+#define GL_SILENCE_DEPRECATION
+#import <OpenGL/gl.h>
 #import <AVFoundation/AVFoundation.h>
 #import <WebKit/WebKit.h>
+#import <ImageIO/ImageIO.h>
 #include <dlfcn.h>
 #include <objc/runtime.h>
 
 
 static NSMutableArray *sSteps;
 static NSView *sLastHit;     // the view the last `mouse` landed on
+
+
+// tst:///<file> and stm://TST/<file> serve a file the way the encyclopedia's protocols do: a plain
+// response with no type, then all the data at once
+static void Log(NSString *aFormat, ...);
+
+@interface TstProtocol : NSURLProtocol
+@end
+@implementation TstProtocol
+static NSMutableDictionary *TstMap;   // URL -> file (tstmap step)
++ (BOOL)canInitWithRequest:(NSURLRequest *)r { return [[[r URL] scheme] isEqualToString:@"tst"] || [[[r URL] host] isEqualToString:@"TST"] || TstMap[[[r URL] absoluteString]]; }
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)r { return r; }
+- (void)startLoading
+{
+	NSString *mapped = TstMap[[[[self request] URL] absoluteString]];
+	NSData *d = [NSData dataWithContentsOfFile:mapped ?: [[[self request] URL] path]];
+	Log(@"tst start %@ thread %@", [[[self request] URL] lastPathComponent], [NSThread isMainThread] ? @"main" : [NSThread currentThread]);
+	NSURLResponse *res = [[NSURLResponse alloc] initWithURL:[[self request] URL] MIMEType:nil expectedContentLength:-1 textEncodingName:nil];
+	[[self client] URLProtocol:self didReceiveResponse:res cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+	[[self client] URLProtocol:self didLoadData:d ?: [NSData data]];
+	[[self client] URLProtocolDidFinishLoading:self];
+}
+- (void)stopLoading {}
+@end
 
 static void Log(NSString *aFormat, ...)
 {
@@ -442,6 +469,141 @@ static void Run(NSString *aLine)
 			}
 			[todo addObjectsFromArray:[v subviews]];
 		}
+	} else if ([cmd isEqualToString:@"weburl"]) {
+		// weburl <url>: loads the URL into the first web view's main frame
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		BOOL done = NO;
+		while ([todo count] && !done) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[WebView class]]) {
+				[[(WebView *)v mainFrame] loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:arg]]];
+				done = YES;
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+		Log(@"weburl %@: %@", arg, done ? @"loading" : @"no web view");
+	} else if ([cmd isEqualToString:@"imgtest"]) {
+		// imgtest <file>: decodes a picture file in this process with ImageIO and NSImage
+		NSData *d = [NSData dataWithContentsOfFile:arg];
+		CGImageSourceRef src = d ? CGImageSourceCreateWithData((__bridge CFDataRef)d, NULL) : NULL;
+		CGImageRef img = src ? CGImageSourceCreateImageAtIndex(src, 0, NULL) : NULL;
+		Log(@"imgtest %@: %lu bytes, source %@ status %d type %@, image %zux%zu", arg, (unsigned long)d.length,
+			src ? @"yes" : @"no", src ? (int)CGImageSourceGetStatus(src) : -99, src ? (__bridge NSString *)CGImageSourceGetType(src) : @"-",
+			img ? CGImageGetWidth(img) : 0, img ? CGImageGetHeight(img) : 0);
+		NSImage *ni = [[NSImage alloc] initWithData:d];
+		NSBitmapImageRep *br = [NSBitmapImageRep imageRepWithData:d];
+		Log(@"imgtest NSImage %@ valid %d, bitmap rep %ldx%ld", NSStringFromSize(ni.size), ni.isValid, (long)br.pixelsWide, (long)br.pixelsHigh);
+		if (img) CGImageRelease(img);
+		if (src) CFRelease(src);
+	} else if ([cmd isEqualToString:@"webhtml"]) {
+		// webhtml <file>: loads the HTML file's text into the first web view, with its folder as base URL
+		NSString *html = [NSString stringWithContentsOfFile:arg encoding:NSUTF8StringEncoding error:nil];
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		BOOL done = NO;
+		while ([todo count] && !done) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[WebView class]]) {
+				[[(WebView *)v mainFrame] loadHTMLString:html baseURL:[NSURL fileURLWithPath:[arg stringByDeletingLastPathComponent] isDirectory:YES]];
+				done = YES;
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+		Log(@"webhtml %@: %@", arg, done ? @"loading" : @"no web view");
+	} else if ([cmd isEqualToString:@"webjs"] || [cmd isEqualToString:@"webjsf"]) {
+		// webjs <script>: runs the script in every web view's main frame and logs the result
+		// (webjsf <file>: the script in a file, since steps split at semicolons and newlines)
+		if ([cmd isEqualToString:@"webjsf"])
+			arg = [NSString stringWithContentsOfFile:arg encoding:NSUTF8StringEncoding error:nil];
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		while ([todo count]) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[WebView class]])
+				Log(@"webjs %@", [(WebView *)v stringByEvaluatingJavaScriptFromString:arg]);
+			[todo addObjectsFromArray:[v subviews]];
+		}
+	} else if ([cmd isEqualToString:@"websub"]) {
+		// websub: the subresources WebKit holds for each web view's main frame
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		while ([todo count]) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[WebView class]])
+				for (WebResource *r in [[[(WebView *)v mainFrame] dataSource] subresources]) {
+					NSData *d = [r data];
+					const unsigned char *b = [d bytes];
+					Log(@"websub %@ %@ %lu bytes %02x%02x%02x%02x", [r URL], [r MIMEType], (unsigned long)d.length,
+						d.length > 3 ? b[0] : 0, d.length > 3 ? b[1] : 0, d.length > 3 ? b[2] : 0, d.length > 3 ? b[3] : 0);
+				}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+	} else if ([cmd isEqualToString:@"weberr"]) {
+		// weberr <class>: logs the errors passed to that class's frame and resource load delegate failure methods
+		Class c = NSClassFromString(arg);
+		SEL sels[] = {@selector(webView:didFailLoadWithError:forFrame:), @selector(webView:didFailProvisionalLoadWithError:forFrame:),
+			@selector(webView:resource:didFailLoadingWithError:fromDataSource:)};
+		for (int i = 0; i < 3; i++) {
+			Method m = class_getInstanceMethod(c, sels[i]);
+			if (!m) { Log(@"weberr %@ lacks %@", arg, NSStringFromSelector(sels[i])); continue; }
+			SEL sel = sels[i];
+			if (i < 2) {
+				void (*orig)(id, SEL, id, id, id) = (void *)method_getImplementation(m);
+				method_setImplementation(m, imp_implementationWithBlock(^(id self, id wv, NSError *e, WebFrame *f) {
+					Log(@"%@ %@ frame %@: %@", NSStringFromSelector(sel), [[[f provisionalDataSource] ?: [f dataSource] request] URL], [f name], e);
+					orig(self, sel, wv, e, f);
+				}));
+			} else {
+				void (*orig)(id, SEL, id, id, id, id) = (void *)method_getImplementation(m);
+				method_setImplementation(m, imp_implementationWithBlock(^(id self, id wv, id ident, NSError *e, WebDataSource *ds) {
+					Log(@"resource failed: %@", e);
+					orig(self, sel, wv, ident, e, ds);
+				}));
+			}
+			Log(@"weberr hooked %@", NSStringFromSelector(sel));
+		}
+	} else if ([cmd isEqualToString:@"tstmap"]) {
+		// tstmap <url> <file>: the test protocol serves the file for that URL
+		NSArray *w = [arg componentsSeparatedByString:@" "];
+		if (!TstMap) TstMap = [NSMutableDictionary dictionary];
+		TstMap[w[0]] = w[1];
+		[NSURLProtocol registerClass:[TstProtocol class]];
+		Log(@"tstmap %@", w[0]);
+	} else if ([cmd isEqualToString:@"tstproto"]) {
+		[NSURLProtocol registerClass:[TstProtocol class]];
+		Log(@"tstproto registered");
+	} else if ([cmd isEqualToString:@"webres"]) {
+		// webres: logs resource load failures and finishes of every web view's resource load delegate
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		while ([todo count]) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v isKindOfClass:[WebView class]]) {
+				id d = [(WebView *)v resourceLoadDelegate];
+				Class c = [d class];
+				Log(@"webres delegate %@", c ? NSStringFromClass(c) : @"(none)");
+				if (c) {
+					class_addMethod(c, @selector(webView:resource:didFailLoadingWithError:fromDataSource:), imp_implementationWithBlock(^(id self, WebView *wv, id ident, NSError *e, WebDataSource *ds) {
+						Log(@"resource FAILED %@: %@", [[ds request] URL], e);
+					}), "v@:@@@@");
+					class_addMethod(c, @selector(webView:resource:didFinishLoadingFromDataSource:), imp_implementationWithBlock(^(id self, WebView *wv, id ident, WebDataSource *ds) {
+						Log(@"resource finished %@", [[ds request] URL]);
+					}), "v@:@@@");
+				}
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
 	} else if ([cmd isEqualToString:@"webfail"]) {
 		// webfail <class>: logs the errors of its frame load delegate methods
 		Class c = NSClassFromString(arg);
@@ -490,6 +652,53 @@ static void Run(NSString *aLine)
 		for (NSWindow *w in Windows()) {
 			Log(@"window %@ %@ \"%@\"", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title]);
 			Dump([w contentView], 1);
+		}
+	} else if ([cmd isEqualToString:@"glshot"]) {
+		// glshot <file>: the first OpenGL view, drawn now and read back from its
+		// context (works while the window server cannot capture, display asleep)
+		NSMutableArray *todo = [NSMutableArray array];
+		for (NSWindow *w in Windows())
+			[todo addObject:[w contentView]];
+		NSOpenGLView *gv = nil;
+		while ([todo count] && !gv) {
+			NSView *v = [todo lastObject];
+			[todo removeLastObject];
+			if ([v respondsToSelector:@selector(openGLContext)] && [(id)v openGLContext])
+				gv = (NSOpenGLView *)v;
+			else if ([NSStringFromClass([v class]) containsString:@"GL"]) {
+				NSMutableString *chain = [NSMutableString string];
+				for (Class c = [v class]; c; c = class_getSuperclass(c))
+					[chain appendFormat:@" %@", NSStringFromClass(c)];
+				Log(@"glshot: %@ has no context:%@", v, chain);
+			}
+			[todo addObjectsFromArray:[v subviews]];
+		}
+		if (!gv) {
+			Log(@"glshot: no OpenGL view");
+		} else {
+			NSOpenGLContext *ctx = [gv openGLContext];
+			NSSize px = [gv convertSizeToBacking:[gv bounds].size];
+			GLint vp[4];
+			[ctx makeCurrentContext];
+			glGetIntegerv(GL_VIEWPORT, vp);
+			int W = vp[2] > 0 ? vp[2] : (int)px.width, H = vp[3] > 0 ? vp[3] : (int)px.height;
+			NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:W pixelsHigh:H bitsPerSample:8
+				samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:W * 4 bitsPerPixel:32];
+			glReadBuffer(GL_FRONT);
+			glPixelStorei(GL_PACK_ALIGNMENT, 1);
+			unsigned char *b = [rep bitmapData];
+			glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, b);
+			unsigned char *row = malloc(W * 4);
+			for (int y = 0; y < H / 2; y++) {
+				memcpy(row, b + y * W * 4, W * 4);
+				memcpy(b + y * W * 4, b + (H - 1 - y) * W * 4, W * 4);
+				memcpy(b + (H - 1 - y) * W * 4, row, W * 4);
+			}
+			free(row);
+			for (int i = 0; i < W * H; i++)
+				b[i * 4 + 3] = 255;
+			[[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:arg atomically:YES];
+			Log(@"glshot %@ %dx%d gl error %x", arg, W, H, glGetError());
 		}
 	} else if ([cmd isEqualToString:@"wshot"]) {
 		// the app's frontmost window as the window server shows it (OpenGL content included)

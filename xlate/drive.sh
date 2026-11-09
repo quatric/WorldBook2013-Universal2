@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 # ARCH=x86_64 runs the Intel slice (under Rosetta on Apple silicon)
 APP=${APP:-"build/2013 World Book.app"}
 EXE="$APP/Contents/MacOS/$(plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")"
-[ build/driver.dylib -nt tools/driver.m ] || clang -arch arm64 -arch x86_64 -dynamiclib -fobjc-arc -framework Cocoa -framework AVFoundation -framework CoreMedia -framework WebKit -o build/driver.dylib tools/driver.m
+[ build/driver.dylib -nt tools/driver.m ] || clang -arch arm64 -arch x86_64 -dynamiclib -fobjc-arc -framework Cocoa -framework AVFoundation -framework CoreMedia -framework WebKit -framework OpenGL -o build/driver.dylib tools/driver.m
 STEPS=${2:-$(cat)}
 # arch -e: SIP strips DYLD_* from the environment of /usr/bin/arch itself
 arch -${ARCH:-arm64} -e WB_DRIVE="$STEPS" -e DYLD_INSERT_LIBRARIES="$PWD/build/driver.dylib" -e XL_VERBOSE=${XL_VERBOSE:-0} -e XL_HANDLE_TRACE=${XL_HANDLE_TRACE:-0} ${XL_HELP_DRYRUN:+-e XL_HELP_DRYRUN=1} "$EXE" -ApplePersistenceIgnoreState YES $DRIVE_ARGS > build/run.log 2>&1 &

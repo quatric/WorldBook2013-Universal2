@@ -897,6 +897,13 @@ static void sh_glTexImage2D(XLCPU *c)
 	}
 	glTexImage2D(A(0), (GLint)A(1), (GLint)A(2), (GLsizei)A(3), (GLsizei)A(4), (GLint)A(5), A(6), A(7),
 		A(8) ? GP(A(8)) : NULL);
+	// a rectangle texture starts out clamped (ARB_texture_rectangle), but the GL
+	// of Apple silicon starts it out repeating, and the home screen's photo
+	// meshes reach beyond their texture: the photo was drawn again beside itself
+	if (A(0) == GL_TEXTURE_RECTANGLE_EXT) {
+		glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	}
 	xl_ret(c, 0);
 }
 

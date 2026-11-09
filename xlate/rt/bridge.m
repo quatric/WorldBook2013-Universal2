@@ -708,7 +708,7 @@ void xl_ccall(XLCPU *c, XLImport *imp)
 	}
 	if (xl_verbose > 5)
 		xl_log("call %s", b->name);
-	if (xl_gl_trace && !strncmp(b->name, "_gl", 3)) {
+	if (xl_gl_trace && !strncmp(b->name, "_gl", 3) && (xl_gl_trace == 1 || strstr(b->name, "Tex") || strstr(b->name, "Pixel") || strstr(b->name, "Delete"))) {
 		// raw argument words, floats shown as such too (driver step gltrace)
 		char buf[256];
 		int o = snprintf(buf, sizeof buf, "GL %s", b->name + 1);
@@ -1157,7 +1157,8 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 		char ks[40] = {0};
 		for (int i = 0; i < m->n && i < 39; i++)
 			ks[i] = m->t[i]->kind;
-		xl_log("msg [%s %s] self %p types %s", class_getName(object_getClass(self)), sel_getName(m->sel), self, ks);
+		xl_log("msg [%s %s] self %p types %s thread %s", class_getName(object_getClass(self)), sel_getName(m->sel), self, ks,
+			[NSThread isMainThread] ? "main" : [[NSString stringWithFormat:@"%p", [NSThread currentThread]] UTF8String]);
 	}
 	if (logit)
 		for (int i = 3; i < m->n && i - 1 < n; i++)
@@ -1165,6 +1166,19 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 				id o = *(id *)A.vals[i - 1];
 				if ([o isKindOfClass:[NSString class]])
 					xl_log("    arg %d: \"%s\"", i - 3, [(NSString *)o UTF8String]);
+				else if ([o isKindOfClass:[NSURLResponse class]])
+					xl_log("    arg %d: %s mime %s len %lld enc %s policy %lu", i - 3, [[o description] UTF8String], [[(NSURLResponse *)o MIMEType] UTF8String],
+						[(NSURLResponse *)o expectedContentLength], [[(NSURLResponse *)o textEncodingName] UTF8String],
+						m->n > 5 ? (unsigned long)*(unsigned long *)A.vals[4] : 99);
+				else if ([o isKindOfClass:[NSData class]]) {
+					const unsigned char *d = [(NSData *)o bytes];
+					xl_log("    arg %d: NSData %lu bytes %02x%02x%02x%02x%02x%02x%02x%02x", i - 3, (unsigned long)[(NSData *)o length],
+						d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+					if (getenv("XL_DUMPDATA")) {
+						NSString *f = [NSString stringWithFormat:@"%s/dump_%lu.bin", getenv("XL_DUMPDATA"), (unsigned long)[(NSData *)o length]];
+						[(NSData *)o writeToFile:f atomically:NO];
+					}
+				}
 				else
 					xl_log("    arg %d: %s %p", i - 3, o ? class_getName(object_getClass(o)) : "nil", o);
 			}
