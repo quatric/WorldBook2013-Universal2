@@ -18,6 +18,7 @@
 #import <ImageIO/ImageIO.h>
 #include <dlfcn.h>
 #include <objc/runtime.h>
+#include <objc/message.h>
 
 
 static NSMutableArray *sSteps;
@@ -710,6 +711,107 @@ static void Run(NSString *aLine)
 			Log(@"wshot %@ (window %ld)", arg, (long)[w windowNumber]);
 		} else
 			Log(@"wshot: no window");
+	} else if ([cmd isEqualToString:@"tracemedia"]) {
+		// tracemedia: logs the used rect of each home screen photo's texture and the
+		// rect -rectForMedia: puts it in
+		Class c = NSClassFromString(@"GLHomeScreenView");
+		Method m = c ? class_getInstanceMethod(c, @selector(rectForMedia:)) : NULL;
+		if (!m) {
+			Log(@"tracemedia: no GLHomeScreenView");
+		} else {
+			__block NSRect (*orig)(id, SEL, id) = (NSRect (*)(id, SEL, id))method_getImplementation(m);
+			method_setImplementation(m, imp_implementationWithBlock(^NSRect(id self, id media) {
+				NSRect r = orig(self, @selector(rectForMedia:), media);
+				id cache = [media respondsToSelector:@selector(mediaCache)] ? [media performSelector:@selector(mediaCache)] : nil;
+				NSRect used = NSZeroRect;
+				if ([cache respondsToSelector:@selector(usedRect)])
+					used = ((NSRect (*)(id, SEL))objc_msgSend)(cache, @selector(usedRect));
+				id eff = [cache respondsToSelector:@selector(effect)] ? [cache performSelector:@selector(effect)] : nil;
+				Log(@"media %p %@ cache %p used %@ -> rect %@ effect %@ flags %lx", media, [media respondsToSelector:@selector(mediaTitle)] ? [media performSelector:@selector(mediaTitle)] : @"", cache, NSStringFromRect(used), NSStringFromRect(r), eff ? NSStringFromClass([eff class]) : @"none", [cache respondsToSelector:@selector(flags)] ? (long)((long (*)(id, SEL))objc_msgSend)(cache, @selector(flags)) : -1L);
+				return r;
+			}));
+			Log(@"tracemedia: hooked");
+			{
+				SEL ms = NSSelectorFromString(@"moveCellWithInfo:toFrame:invalidateCursors:");
+				int nc = objc_getClassList(NULL, 0);
+				Class *all = (Class *)malloc(sizeof(Class) * nc);
+				nc = objc_getClassList(all, nc);
+				for (int k = 0; k < nc; k++) {
+					Method mv = class_getInstanceMethod(all[k], ms);
+					if (!mv || class_getInstanceMethod(class_getSuperclass(all[k]), ms) == mv)
+						continue;
+					IMP mo = method_getImplementation(mv);
+					static NSMutableDictionary *seen;
+					seen = [NSMutableDictionary dictionary];
+					Log(@"tracemedia: hooking move in %s", class_getName(all[k]));
+					method_setImplementation(mv, imp_implementationWithBlock(^(id self, id info, NSRect f, BOOL inv) {
+						NSNumber *key = @((uintptr_t)info);
+						int n = [seen[key] intValue];
+						seen[key] = @(n + 1);
+						if (n == 0 || n % 60 == 0)
+							Log(@"move %p %@ #%d to %@", info, NSStringFromClass([info class]), n, NSStringFromRect(f));
+						((void (*)(id, SEL, id, NSRect, BOOL))mo)(self, ms, info, f, inv);
+					}));
+				}
+				free(all);
+			}
+			// which of the media methods run at all
+			static int sCalls[4];
+			NSArray *names = @[@"startNewMediaCell", @"startNewMedia:", @"animateMedia:", @"renderMedia:"];
+			for (int i = 0; i < 4; i++) {
+				SEL sel = NSSelectorFromString(names[i]);
+				Method mm = class_getInstanceMethod(c, sel);
+				if (i == 2 || i == 3)
+					continue;
+				if (!mm)
+					continue;
+				BOOL hasArg = [names[i] hasSuffix:@":"];
+				IMP o = method_getImplementation(mm);
+				int idx = i;
+				if (hasArg)
+					method_setImplementation(mm, imp_implementationWithBlock(^(id self, id a) {
+						if (sCalls[idx]++ % 200 == 0)
+							Log(@"call %@ #%d arg %@", names[idx], sCalls[idx], a ? NSStringFromClass([a class]) : @"nil");
+						((void (*)(id, SEL, id))o)(self, sel, a);
+					}));
+				else
+					method_setImplementation(mm, imp_implementationWithBlock(^(id self) {
+						if (sCalls[idx]++ % 200 == 0)
+							Log(@"call %@ #%d", names[idx], sCalls[idx]);
+						((void (*)(id, SEL))o)(self, sel);
+					}));
+			}
+		}
+	} else if ([cmd isEqualToString:@"ivars"]) {
+		// ivars <class>: the instance variables and methods the runtime knows for a class
+		Class c = NSClassFromString(arg);
+		for (; c; c = class_getSuperclass(c)) {
+			unsigned n = 0;
+			Ivar *iv = class_copyIvarList(c, &n);
+			NSMutableString *s = [NSMutableString stringWithFormat:@"%s ivars:", class_getName(c)];
+			for (unsigned i = 0; i < n; i++)
+				[s appendFormat:@" %s(%s)", ivar_getName(iv[i]), ivar_getTypeEncoding(iv[i]) ?: ""];
+			free(iv);
+			Method *ms = class_copyMethodList(c, &n);
+			[s appendFormat:@" | methods(%u):", n];
+			for (unsigned i = 0; i < n && i < 80; i++)
+				[s appendFormat:@" %s", sel_getName(method_getName(ms[i]))];
+			free(ms);
+			Log(@"%@", s);
+		}
+	} else if ([cmd isEqualToString:@"hshot"]) {
+		// hshot <file>: the home screen window as the window server shows it
+		NSWindow *w = nil;
+		for (NSWindow *c in Windows())
+			if ([[c title] isEqualToString:@"World Book Home Screen"])
+				w = c;
+		if (w) {
+			unsetenv("DYLD_INSERT_LIBRARIES");
+			NSString *c = [NSString stringWithFormat:@"/usr/sbin/screencapture -x -o -l %ld '%@'", (long)[w windowNumber], arg];
+			system([c UTF8String]);
+			Log(@"hshot %@ (window %ld)", arg, (long)[w windowNumber]);
+		} else
+			Log(@"hshot: no home screen window");
 	} else if ([cmd isEqualToString:@"windows"]) {
 		for (NSWindow *w in Windows())
 			Log(@"window %@ %@ \"%@\"%@ #%ld style %lx content %@", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"", (long)[w windowNumber], (unsigned long)[w styleMask], NSStringFromRect([[w contentView] frame]));
