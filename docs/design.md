@@ -173,3 +173,17 @@ Layout plists give BOOLs as strings ("YES"), and `NSString` has no
 `useTextureRectangle` and the like at their defaults, and the home screen's
 showcase then textured some photos wrongly (a photo repeated across its card,
 cards seeming to overlap). Strings now set them through `-boolValue`.
+
+## Home screen photos
+
+The OpenGL home screen tells the media provider what textures to make for
+the photos (rectangle ones, which do not repeat) in `-onceInit`, which
+`-[GLView drawRect:]` runs at the view's first draw. `-[LayoutController
+showHomeScreen:]` shows the window and then starts the provider's
+preloading thread. In 2013 `-showWindow:` had drawn the window by the time
+it returned; today the first draw waits for the next display pass, so the
+thread made its first photo with no flags at all: a power-of-two texture
+that repeats, and the strip showed that photo again over the cards beside
+it (a translucent ghost of one card's photo on another). Preloading now
+starts once the view has drawn (`appkit.m`): at once where `-display` still
+draws it, else on a later turn of the run loop.

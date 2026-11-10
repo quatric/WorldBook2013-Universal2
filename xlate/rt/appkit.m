@@ -310,6 +310,64 @@ static void fitting_home_layout(void)
 		(IMP)xl_screen_frame);
 }
 
+// ---- home screen photos ----------------------------------------------------------------------
+// The OpenGL home screen tells the media provider what textures to make for
+// the photos (rectangle ones, which do not repeat) in -onceInit, which
+// -[GLView drawRect:] runs at the view's first draw. -[LayoutController
+// showHomeScreen:] shows the window and then starts the provider's preloading
+// thread: 2013's -showWindow: had drawn the window by the time it returned,
+// today the first draw waits for the next display pass. The thread then made
+// its first photo with no flags at all, a power-of-two texture that repeats,
+// and the strip showed that photo again over the cards beside it. Preloading
+// starts once the view has drawn: at once where -display still draws it, else
+// on a later turn of the run loop.
+static IMP orig_start_preloading;
+
+static NSView *gl_home_view(void)
+{
+	Class glv = objc_getClass("GLView");
+	if (!glv)
+		return nil;
+	for (NSWindow *w in [NSApp windows])
+		if ([w isVisible] && [[w contentView] isKindOfClass:glv])
+			return [w contentView];
+	return nil;
+}
+
+static void xl_start_preloading(id self, SEL _cmd)
+{
+	static int waits;
+	NSView *v = gl_home_view();
+	if (v && [self respondsToSelector:@selector(textureFlags)]
+		&& !((unsigned (*)(id, SEL))objc_msgSend)(self, @selector(textureFlags)) && waits < 150) {
+		if (!waits)
+			[v display];
+		if (!((unsigned (*)(id, SEL))objc_msgSend)(self, @selector(textureFlags))) {
+			waits++;
+			[self retain];
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+				xl_start_preloading(self, _cmd);
+				[self release];
+			});
+			return;
+		}
+	}
+	if (xl_verbose > 0)
+		xl_log("home screen photos: preloading starts after %d wait(s), texture flags %x", waits,
+			[self respondsToSelector:@selector(textureFlags)]
+				? ((unsigned (*)(id, SEL))objc_msgSend)(self, @selector(textureFlags)) : 0);
+	waits = 0;
+	((void (*)(id, SEL))orig_start_preloading)(self, _cmd);
+}
+
+static void preloading_after_first_draw(void)
+{
+	Class c = objc_getClass("MediaProvider");
+	Method m = c ? class_getInstanceMethod(c, @selector(startPreloading)) : NULL;
+	if (m)
+		orig_start_preloading = method_setImplementation(m, (IMP)xl_start_preloading);
+}
+
 // ---- bundles translated into the executable ------------------------------------------------
 // Preference panes and plug-ins are i386 bundles the app loads with NSBundle.
 // Their code is translated with the app (xlate/images.txt) and their classes
@@ -686,6 +744,7 @@ void xl_appkit_hooks(void)
 	clipping_old_boxes();
 	translated_bundles();
 	fitting_home_layout();
+	preloading_after_first_draw();
 	stable_line_fragments("HSExtendedTextContainer");
 	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
 		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");
