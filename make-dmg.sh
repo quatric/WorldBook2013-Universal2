@@ -10,12 +10,12 @@
 # encyclopedia's content from the image into the app (pkg/scripts/postinstall).
 # The image keeps its volume name (World Book DVD, which the app looks for),
 # content, background, window and icon layout and user guide; Registration on
-# it is the translated one. Every bundle's version gets the -U2B suffix.
+# it is the translated one. Every bundle's version gets the -U2C suffix.
 # The template is only read: changes go to a shadow file. Needs about 6 GB free.
 set -e
 cd "${0:A:h}"
 TEMPLATE="${1:?usage: make-dmg.sh <2013WorldBookMac.dmg> [version]}"
-VER="${2:-17.0.0-U2B}"
+VER="${2:-17.0.0-U2C}"
 SUFFIX="-${VER#*-}"
 PY="${PY:-.venv/bin/python}"
 PKG_ID="io.github.quatric.worldbook2013-universal2"

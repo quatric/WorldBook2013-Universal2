@@ -57,7 +57,7 @@ python3 tools/surf_extract.py "game/2013 World Book/2013 World Book.app/Contents
 
 ## Disk image
 
-`make-dmg.sh` builds `build/2013WorldBookMac_17.0.0-U2B.dmg` from MacKiev's
+`make-dmg.sh` builds `build/2013WorldBookMac_17.0.0-U2C.dmg` from MacKiev's
 `2013WorldBookMac.dmg` (the "World Book DVD" image):
 
 - MacKiev's installer is a 32-bit app, so it is replaced by
@@ -66,14 +66,14 @@ python3 tools/surf_extract.py "game/2013 World Book/2013 World Book.app/Contents
   and its postinstall copies the encyclopedia's content (`2013CDs`, 4.3 GB)
   from the image into the app, like MacKiev's full install.
 - Registration on the image is the translated one.
-- Every bundle's version ends in `-U2B` (17.0.0-U2B for World Book).
+- Every bundle's version ends in `-U2C` (17.0.0-U2C for World Book).
   `CFBundleVersion` keeps its build number.
 - The volume name (which the app looks for when its content is not
   installed), content, background, window and icon layout and user guide are
   MacKiev's.
 
 ```sh
-./make-dmg.sh 2013WorldBookMac.dmg 17.0.0-U2B
+./make-dmg.sh 2013WorldBookMac.dmg 17.0.0-U2C
 ```
 
 The template is only read; changes go to a shadow file. It needs about 6 GB free.
