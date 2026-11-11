@@ -775,9 +775,42 @@ static void flipped_images(void)
 	orig_image_unlockFocus = method_setImplementation(class_getInstanceMethod(c, @selector(unlockFocus)), (IMP)xl_image_unlockFocus);
 }
 
+// ---- OpenGL views in points ------------------------------------------------------------------
+// An NSOpenGLView of an app linked against today's SDK gets a surface in
+// pixels (wantsBestResolutionOpenGLSurface), one of 2013 a surface in points.
+// The home screen's GLView sets its viewport from -bounds, so on a Retina
+// display (Jump Desktop's display can switch to one on reconnecting) it drew
+// a small copy of itself in the surface's lower left corner. The views keep
+// surfaces in points, as they were written for.
+static IMP orig_glview_initFrame, orig_glview_initCoder;
+
+static id xl_glview_initWithFrame(NSOpenGLView *self, SEL _cmd, NSRect r, NSOpenGLPixelFormat *pf)
+{
+	self = ((id (*)(id, SEL, NSRect, id))orig_glview_initFrame)(self, _cmd, r, pf);
+	[self setWantsBestResolutionOpenGLSurface:NO];
+	return self;
+}
+
+static id xl_glview_initWithCoder(NSOpenGLView *self, SEL _cmd, NSCoder *c)
+{
+	self = ((id (*)(id, SEL, id))orig_glview_initCoder)(self, _cmd, c);
+	[self setWantsBestResolutionOpenGLSurface:NO];
+	return self;
+}
+
+static void gl_views_in_points(void)
+{
+	Class c = [NSOpenGLView class];
+	orig_glview_initFrame = method_setImplementation(class_getInstanceMethod(c, @selector(initWithFrame:pixelFormat:)),
+		(IMP)xl_glview_initWithFrame);
+	orig_glview_initCoder = method_setImplementation(class_getInstanceMethod(c, @selector(initWithCoder:)),
+		(IMP)xl_glview_initWithCoder);
+}
+
 void xl_appkit_hooks(void)
 {
 	flipped_images();
+	gl_views_in_points();
 	help_viewer_gone();
 	typed_responses();
 	subframe_media("STMController");

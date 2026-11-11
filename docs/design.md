@@ -136,6 +136,11 @@ kept once, the first, as dyld did.
 
 ## Old habits
 
+- An NSOpenGLView of an app linked against today's SDK gets a Retina surface
+  in pixels; the 2013 views set their viewports from `-bounds` in points and
+  would draw a small copy in the corner on a 2x display. They are made with
+  `wantsBestResolutionOpenGLSurface` off.
+
 - An image made flipped with `-setFlipped:YES` and drawn into with
   `-lockFocus` (Just Looking's text cards, kept as TIFF) stores its drawing
   upside down today; it is drawn into with `-lockFocusFlipped:YES` instead.

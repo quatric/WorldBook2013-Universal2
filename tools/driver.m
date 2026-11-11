@@ -812,6 +812,29 @@ static void Run(NSString *aLine)
 			Log(@"hshot %@ (window %ld)", arg, (long)[w windowNumber]);
 		} else
 			Log(@"hshot: no home screen window");
+	} else if ([cmd isEqualToString:@"hframe"] || [cmd isEqualToString:@"hgl"]) {
+		// hframe x y w h: moves and sizes the home screen window, as the window
+		// server does when a display changes; hgl: its OpenGL view's state
+		NSWindow *w = nil;
+		for (NSWindow *c in Windows())
+			if ([[c title] isEqualToString:@"World Book Home Screen"])
+				w = c;
+		NSView *v = [w contentView];
+		if ([cmd isEqualToString:@"hframe"]) {
+			NSArray *a = [arg componentsSeparatedByString:@" "];
+			[w setFrame:NSMakeRect([a[0] doubleValue], [a[1] doubleValue], [a[2] doubleValue], [a[3] doubleValue]) display:YES];
+		}
+		NSOpenGLContext *ctx = [v isKindOfClass:[NSOpenGLView class]] ? [(NSOpenGLView *)v openGLContext] : nil;
+		GLint vp[4] = {0}, dims[2] = {0};
+		if (ctx) {
+			[ctx makeCurrentContext];
+			glGetIntegerv(GL_VIEWPORT, vp);
+			CGLGetParameter([ctx CGLContextObj], kCGLCPSurfaceBackingSize, dims);
+		}
+		Log(@"%@ window %@ view %@ backing %@ best %d viewport %d %d %d %d surface %dx%d scale %g", cmd, NSStringFromRect([w frame]),
+			NSStringFromRect([v frame]), NSStringFromRect([v convertRectToBacking:[v bounds]]),
+			[v respondsToSelector:@selector(wantsBestResolutionOpenGLSurface)] ? (int)[(NSOpenGLView *)v wantsBestResolutionOpenGLSurface] : -1,
+			vp[0], vp[1], vp[2], vp[3], dims[0], dims[1], [w backingScaleFactor]);
 	} else if ([cmd isEqualToString:@"windows"]) {
 		for (NSWindow *w in Windows())
 			Log(@"window %@ %@ \"%@\"%@ #%ld style %lx content %@", NSStringFromClass([w class]), NSStringFromRect([w frame]), [w title], w == [NSApp modalWindow] ? @" modal" : @"", (long)[w windowNumber], (unsigned long)[w styleMask], NSStringFromRect([[w contentView] frame]));
