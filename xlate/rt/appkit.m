@@ -807,9 +807,90 @@ static void gl_views_in_points(void)
 		(IMP)xl_glview_initWithCoder);
 }
 
+// ---- delegates kept by translated code ---------------------------------------------------------
+// -[HSExtendedLayoutManager setDelegate:] gives NSLayoutManager itself as its
+// delegate and keeps the real one (the HSArticleView) in an ivar that
+// -delegate returns, unretained. NSLayoutManager sends
+// -layoutManager:didCompleteLayoutForTextContainer:atEnd: to [self delegate]
+// as it fills layout holes, so an article view freed before its layout
+// manager left a dangling delegate, and a later redraw of the text sent that
+// message to whatever object had taken its place. When such a delegate is
+// deallocated, the layout manager is now given a nil delegate.
+@interface XLDelegateClearer : NSObject {
+@public
+	id owner;        // unretained; nil once the owner is gone
+	id delegate;     // unretained
+}
+@end
+@implementation XLDelegateClearer
+- (void)dealloc
+{
+	// released while the delegate is destroyed (an associated object of it)
+	if (owner && ((id (*)(id, SEL))objc_msgSend)(owner, @selector(delegate)) == delegate) {
+		if (xl_verbose)
+			xl_log("delegate %s of %s deallocated: cleared", class_getName(object_getClass(delegate)),
+				class_getName(object_getClass(owner)));
+		((void (*)(id, SEL, id))objc_msgSend)(owner, @selector(setDelegate:), nil);
+	}
+	[super dealloc];
+}
+@end
+
+// an associated object of the owner: disarms the delegate's clearer when the owner goes first
+@interface XLDelegateDisarmer : NSObject {
+@public
+	XLDelegateClearer *clearer;   // unretained; cleared when the clearer goes
+}
+@end
+@implementation XLDelegateDisarmer
+- (void)dealloc
+{
+	if (clearer)
+		clearer->owner = nil;
+	[super dealloc];
+}
+@end
+
+static IMP orig_lm_setDelegate;
+static char clearer_key, disarmer_key;
+
+static void xl_lm_setDelegate(id self, SEL _cmd, id d)
+{
+	((void (*)(id, SEL, id))orig_lm_setDelegate)(self, _cmd, d);
+	XLDelegateDisarmer *dis = objc_getAssociatedObject(self, &disarmer_key);
+	if (dis && dis->clearer) {
+		// the previous delegate's clearer no longer applies
+		dis->clearer->owner = nil;
+		dis->clearer = nil;
+	}
+	if (!d || d == self)
+		return;
+	XLDelegateClearer *cl = [XLDelegateClearer new];
+	cl->owner = self;
+	cl->delegate = d;
+	// keyed by the owner, so a delegate of several layout managers gets one per manager
+	objc_setAssociatedObject(d, (void *)((uintptr_t)&clearer_key ^ (uintptr_t)self), cl, OBJC_ASSOCIATION_RETAIN);
+	[cl release];
+	if (!dis) {
+		dis = [XLDelegateDisarmer new];
+		objc_setAssociatedObject(self, &disarmer_key, dis, OBJC_ASSOCIATION_RETAIN);
+		[dis release];
+	}
+	dis->clearer = cl;
+}
+
+static void clear_delegate_on_dealloc(const char *cls)
+{
+	Class c = objc_getClass(cls);
+	Method m = c ? class_getInstanceMethod(c, @selector(setDelegate:)) : NULL;
+	if (m)
+		orig_lm_setDelegate = method_setImplementation(m, (IMP)xl_lm_setDelegate);
+}
+
 void xl_appkit_hooks(void)
 {
 	flipped_images();
+	clear_delegate_on_dealloc("HSExtendedLayoutManager");
 	gl_views_in_points();
 	help_viewer_gone();
 	typed_responses();

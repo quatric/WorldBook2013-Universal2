@@ -421,7 +421,7 @@ static void Run(NSString *aLine)
 					id val = nil;
 					// key/sub1,sub2: an array's elements, each with those keys
 					NSArray *ks = [k componentsSeparatedByString:@"/"];
-					@try { val = [v valueForKey:ks[0]]; } @catch (id e) { val = e; }
+					@try { val = [v valueForKeyPath:ks[0]]; } @catch (id e) { val = e; }
 					if (ks.count > 1 && [val isKindOfClass:[NSArray class]]) {
 						Log(@"kvc %@.%@: %lu", w[0], ks[0], (unsigned long)[val count]);
 						for (id el in val) {
@@ -812,6 +812,17 @@ static void Run(NSString *aLine)
 			Log(@"hshot %@ (window %ld)", arg, (long)[w windowNumber]);
 		} else
 			Log(@"hshot: no home screen window");
+	} else if ([cmd isEqualToString:@"wclose"]) {
+		// wclose: closes the key (else the main) window as its close button does
+		NSWindow *w = [NSApp keyWindow] ?: [NSApp mainWindow] ?: [Windows() firstObject];
+		Log(@"wclose %@ \"%@\"", NSStringFromClass([w class]), [w title]);
+		[w performClose:nil];
+	} else if ([cmd isEqualToString:@"wframe"]) {
+		// wframe x y w h: moves and sizes the key (else the first) window
+		NSWindow *w = [NSApp keyWindow] ?: [NSApp mainWindow] ?: [Windows() firstObject];
+		NSArray *a = [arg componentsSeparatedByString:@" "];
+		[w setFrame:NSMakeRect([a[0] doubleValue], [a[1] doubleValue], [a[2] doubleValue], [a[3] doubleValue]) display:YES];
+		Log(@"wframe %@ %@", NSStringFromClass([w class]), NSStringFromRect([w frame]));
 	} else if ([cmd isEqualToString:@"hframe"] || [cmd isEqualToString:@"hgl"]) {
 		// hframe x y w h: moves and sizes the home screen window, as the window
 		// server does when a display changes; hgl: its OpenGL view's state
