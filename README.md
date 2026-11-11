@@ -44,6 +44,17 @@ APP="build/Notepad.app" sh xlate/drive.sh 20 'wait 8; windows'
 `WB_DVD=<mounted DVD>` before `xlate/mkapp.sh` links the disc's content into
 the test app.
 
+## Surf The Ages as plain HTML
+
+`tools/surf_extract.py` unpacks the Surf The Ages feature (`Surf.book` in the
+app's Resources) into a folder of pages, pictures and sounds that opens in a
+web browser (`index.htm`). Links to World Book articles, which only the app
+can show, become plain text.
+
+```sh
+python3 tools/surf_extract.py "game/2013 World Book/2013 World Book.app/Contents/Resources/Surf.book" "build/Surf The Ages"
+```
+
 ## Disk image
 
 `make-dmg.sh` builds `build/2013WorldBookMac_17.0.0-U2B.dmg` from MacKiev's
