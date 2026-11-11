@@ -309,3 +309,20 @@ void xl_sh_NSHashInsertIfAbsent(XLCPU *c)
 
 void xl_sh_NSHashRemove(XLCPU *c) { xl_sh_NSMapRemove(c); }
 void xl_sh_NSCountHashTable(XLCPU *c) { xl_sh_NSCountMapTable(c); }
+
+// NSHashEnumerator is 3 words as well, returned the same way
+void xl_sh_NSEnumerateHashTable(XLCPU *c) { xl_sh_NSEnumerateMapTable(c); }
+
+void xl_sh_NSNextHashEnumeratorItem(XLCPU *c)
+{
+	uint32_t *e = (uint32_t *)GP(A(0));
+	NSArray *snap = e[2] ? (NSArray *)xl_p(e[2]) : nil;
+	if (!snap || e[1] >= [snap count]) {
+		xl_ret(c, 0);
+		return;
+	}
+	XLGEntry *en = snap[e[1]++];
+	xl_ret(c, en->key);
+}
+
+void xl_sh_NSEndHashTableEnumeration(XLCPU *c) { xl_sh_NSEndMapTableEnumeration(c); }

@@ -17,11 +17,16 @@ def read_fork(fork):
     for seg in fork['Segments']:
         A.seek(seg['OffsLO'] + (seg.get('OffsHI', 0) << 32))
         raw = A.read(seg['Length'])
+        # compressed: a zlib stream, then a 9-byte trailer (length, checksum).
+        # Stored: the bytes, then the trailer. A stored file can itself be a
+        # zlib stream (maps_tree.zplst, World Book's "zdat" format: zlib data,
+        # length, 'zdat'), which inflates too but leaves more than the trailer
+        z = zlib.decompressobj()
         try:
-            data += zlib.decompress(raw)
+            out = z.decompress(raw)
         except zlib.error:
-            # stored: the bytes, then a 9-byte trailer (length, checksum)
-            data += raw[:-9]
+            out = None
+        data += out if out is not None and z.eof and len(z.unused_data) == 9 else raw[:-9]
     return data
 
 

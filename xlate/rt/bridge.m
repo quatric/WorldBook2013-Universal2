@@ -1093,6 +1093,24 @@ static XLGuestPlanes *guest_planes(MsgSig *m, uint32_t a0, unsigned char **hp, l
 	return gp;
 }
 
+// NSTextAlignment: i386 and x86_64 have right 1, center 2; arm64 has center 1,
+// right 2. The guest's values are swapped on the way in and out of messages
+// that take or return an alignment.
+#if defined(__arm64__)
+// 1: the first argument is an alignment, 2: the return value is, 0: neither
+static int align_sel(SEL s)
+{
+	if (s == @selector(setAlignment:) || s == @selector(setAlignment:range:) || s == @selector(setTextAlignment:)
+		|| s == @selector(setTitleAlignment:) || s == @selector(initWithTextAlignment:location:options:))
+		return 1;
+	if (s == @selector(alignment) || s == @selector(textAlignment) || s == @selector(titleAlignment))
+		return 2;
+	return 0;
+}
+
+static inline long swap_align(long a) { return a == 1 ? 2 : a == 2 ? 1 : a; }
+#endif
+
 static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 {
 	Args A;
@@ -1198,6 +1216,11 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 		uint32_t t = *(uint32_t *)GP(a0 + 8);
 		*(long *)A.vals[2] = t ? (long)xl_p(t) : 0;
 	}
+#if defined(__arm64__)
+	int align = align_sel(m->sel);
+	if (align == 1 && m->n > 3 && strchr("lLqQ", m->t[3]->kind))
+		*(long *)A.vals[2] = swap_align(*(long *)A.vals[2]);
+#endif
 	uint8_t rv[256] __attribute__((aligned(16)));
 	memset(rv, 0, 16);
 	NSException *exc = nil;
@@ -1251,6 +1274,10 @@ static void msg_host(XLCPU *c, MsgSig *m, id self, uint32_t a0, int stret)
 			: w * 3 * [self pixelsHigh];
 	}
 	copy_out(&A);
+#if defined(__arm64__)
+	if (align == 2 && strchr("lLqQ", rt->kind))
+		*(long *)rv = swap_align(*(long *)rv);
+#endif
 	set_ret(c, rt, rv, sret, 1);
 	if (tagret)
 		c->r[EAX] = *(long *)rv ? xl_h((void *)*(long *)rv) : 0;

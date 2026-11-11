@@ -77,6 +77,10 @@ The template is only read; changes go to a shadow file. It needs about 6 GB free
 - The screen saver, Dashboard widgets and Spotlight importer that MacKiev's
   installer also put in place are 32-bit plug-ins for hosts that no longer
   load them, and are not installed.
+- What's Online's Update Now reaches MacKiev's updating service
+  (worldbook.softwaremackiev.com), which no longer accepts the 2013 edition,
+  so it ends with "Updating was not successful". The other What's Online
+  sections that use the installed content are not affected.
 - Help Viewer is gone from macOS 27 (Tips shows these help books blank), so
   there Help menus, help buttons and What's New? open the help pages in your
   web browser instead.

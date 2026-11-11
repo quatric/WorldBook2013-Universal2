@@ -10,6 +10,10 @@ is the starting point; 32-bit code needs more than a new instruction decoder.
 
 - `tools/unarch` + `tools/unzp.py` extract the installer payload
   (`Archive.zp`, MacKiev InstallerMaker "YA" format) into `game/`.
+  A stored file can itself be zlib data (`maps_tree.zplst`, World Book's
+  "zdat" format: zlib stream, length, `zdat`), which inflates as well; a
+  segment is only taken as compressed when nothing but its 9-byte trailer
+  follows the stream. The Atlas's map list is that file.
 - `analysis/<image>-i386`: thin i386 slices. Symbols are not stripped
   (about 13 000 named functions), so no decompiler pass is needed for names.
 
@@ -66,6 +70,13 @@ the host method's type encoding plus header knowledge):
 - Special cases: fast enumeration (host state kept per guest state block),
   `-[NSData bytes]`-style returns (remapped), function pointers (libffi
   closures into translated code).
+
+- `NSTextAlignment` is numbered differently on arm64 (center 1, right 2)
+  than on i386 and x86_64 (right 1, center 2): the arm64 slice swaps the two
+  for `setAlignment:`, `alignment` and their kin.
+- The NSMapTable / NSHashTable C functions run on guest words in
+  `maptable.m`, enumeration included; a call left to Foundation would hand it
+  the runtime's own table object.
 
 Native → guest: the reverse, driven by the original method's type encoding.
 
@@ -124,6 +135,10 @@ class defined both by the app and a pane (`WBDTextColoringPreviewView`) is
 kept once, the first, as dyld did.
 
 ## Old habits
+
+- An image made flipped with `-setFlipped:YES` and drawn into with
+  `-lockFocus` (Just Looking's text cards, kept as TIFF) stores its drawing
+  upside down today; it is drawn into with `-lockFocusFlipped:YES` instead.
 
 - `performSelector:withObject:` is often handed an integer in disguise (the
   dictionary's index arrays pass an entry number, nibs a BOOL). Calls of a

@@ -736,8 +736,48 @@ static void subframe_media(const char *cls)
 		orig_provisional = method_setImplementation(m, (IMP)xl_provisional);
 }
 
+// ---- drawing into a flipped image ------------------------------------------------------------
+// The text cards of Just Looking (+[WBThumbnailCell imageFromText:...]) are
+// drawn into an image made flipped with -setFlipped:YES, then kept as its
+// TIFFRepresentation. Today such an image stores what is drawn into it upside
+// down. -lockFocusFlipped:YES on an unflipped image gives the same flipped
+// coordinates with the bitmap the right way up; the flag comes back at -unlockFocus.
+static IMP orig_image_lockFocus, orig_image_unlockFocus;
+static __thread int image_focusing;
+static char flipped_key;
+
+static void xl_image_lockFocus(NSImage *self, SEL _cmd)
+{
+	if (image_focusing || ![self isFlipped]) {
+		((void (*)(id, SEL))orig_image_lockFocus)(self, _cmd);
+		return;
+	}
+	image_focusing = 1;
+	[self setFlipped:NO];
+	objc_setAssociatedObject(self, &flipped_key, @YES, OBJC_ASSOCIATION_RETAIN);
+	[self lockFocusFlipped:YES];
+	image_focusing = 0;
+}
+
+static void xl_image_unlockFocus(NSImage *self, SEL _cmd)
+{
+	((void (*)(id, SEL))orig_image_unlockFocus)(self, _cmd);
+	if (objc_getAssociatedObject(self, &flipped_key)) {
+		objc_setAssociatedObject(self, &flipped_key, nil, OBJC_ASSOCIATION_RETAIN);
+		[self setFlipped:YES];
+	}
+}
+
+static void flipped_images(void)
+{
+	Class c = [NSImage class];
+	orig_image_lockFocus = method_setImplementation(class_getInstanceMethod(c, @selector(lockFocus)), (IMP)xl_image_lockFocus);
+	orig_image_unlockFocus = method_setImplementation(class_getInstanceMethod(c, @selector(unlockFocus)), (IMP)xl_image_unlockFocus);
+}
+
 void xl_appkit_hooks(void)
 {
+	flipped_images();
 	help_viewer_gone();
 	typed_responses();
 	subframe_media("STMController");
