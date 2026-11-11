@@ -134,6 +134,13 @@ at launch, so `-[NSBundle load]` of such a bundle only says yes, and
 class defined both by the app and a pane (`WBDTextColoringPreviewView`) is
 kept once, the first, as dyld did.
 
+The original i386 binaries of these bundles and of the private frameworks
+are never loaded, but the files stay: `NSBundle` gives no `executablePath`
+for a bundle without one, and that path is how the runtime knows a
+translated bundle. `xlate/stub_i386.sh` (run by `mkapp.sh` and `app.sh`)
+replaces each with an empty Universal 2 dylib or bundle (frameworks keep
+their install names), so every Mach-O file in the apps is Universal 2.
+
 ## Old habits
 
 - An NSOpenGLView of an app linked against today's SDK gets a Retina surface

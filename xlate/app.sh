@@ -75,4 +75,6 @@ plutil -remove LSArchitecturePriority "$APP/Contents/Info.plist" 2>/dev/null || 
 plutil -remove LSRequiresNativeExecution "$APP/Contents/Info.plist" 2>/dev/null || true
 rm -f "$APP/Contents/MacOS/$EXE"
 cp "$OUT/$EXE" "$APP/Contents/MacOS/$EXE"
+# the original 32-bit frameworks and plug-ins, translated above, become empty Universal 2 stubs
+sh xlate/stub_i386.sh "$APP" > /dev/null
 echo "$APP"

@@ -15,6 +15,8 @@ plutil -replace NSRequiresAquaSystemAppearance -bool YES "$APP/Contents/Info.pli
 # signature is kept (the bundle itself carries the original's resources)
 rm -f "$APP/Contents/MacOS/2013 World Book"
 cp build/WorldBook "$APP/Contents/MacOS/2013 World Book"
+# the original 32-bit frameworks and plug-ins, translated above, become empty Universal 2 stubs
+sh xlate/stub_i386.sh "$APP" > /dev/null
 # the DVD's content where a full install puts it (the app looks in its
 # Resources before asking for the disc); WB_DVD is the mounted disc image
 DVD=${WB_DVD:-"/Volumes/World Book DVD"}
