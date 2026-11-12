@@ -154,21 +154,12 @@ void xl_host_method_replaced(Class cls, SEL sel, IMP orig, IMP guest)
 	}
 }
 
-// ---- NSMovie -------------------------------------------------------------------------------
-// NSMovie wrapped a QuickTime Movie; the class remains without its methods.
-// Movies are not available yet: initialisers fail.
-static id xl_movie_initWithURL(id self, SEL _cmd, NSURL *url, BOOL byRef)
-{
-	if (xl_verbose > 0)
-		xl_log("NSMovie %s: movies not available", [[url absoluteString] UTF8String]);
-	[self release];
-	return nil;
-}
-
 // ---- delegate messages current AppKit sends without asking -------------------------------
 // NSLayoutManager sends -layoutManagerDidInvalidateLayout: to a delegate that
 // implements other layout delegate methods even when it does not respond to it
 static void xl_noop_obj(id self, SEL _cmd, id arg) {}
+
+static void xl_noop_layout_done(id self, SEL _cmd, id lm, id tc, BOOL atEnd) {}
 
 static void add_noop(const char *cls, const char *sel)
 {
@@ -176,6 +167,18 @@ static void add_noop(const char *cls, const char *sel)
 	SEL s = sel_registerName(sel);
 	if (c && !class_respondsToSelector(c, s))
 		class_addMethod(c, s, (IMP)xl_noop_obj, "v@:@");
+}
+
+// a text delegate that implements none of the layout delegate messages
+static void add_layout_noops(const char *cls)
+{
+	add_noop(cls, "layoutManagerDidInvalidateLayout:");
+	Class c = objc_getClass(cls);
+	SEL s = @selector(layoutManager:didCompleteLayoutForTextContainer:atEnd:);
+	char t[16];
+	snprintf(t, sizeof t, "v@:@@%s", @encode(BOOL));
+	if (c && !class_respondsToSelector(c, s))
+		class_addMethod(c, s, (IMP)xl_noop_layout_done, t);
 }
 
 // Table column identifiers in the 2013 nibs are numbers; NSComboBoxCell now
@@ -903,9 +906,9 @@ void xl_appkit_hooks(void)
 	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
 		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");
 	add_noop("HSArticleView", "layoutManagerDidInvalidateLayout:");
-	Class movie = objc_getClass("NSMovie");
-	if (movie && !class_getInstanceMethod(movie, @selector(initWithURL:byReference:)))
-		class_addMethod(movie, @selector(initWithURL:byReference:), (IMP)xl_movie_initWithURL, "@@:@c");
+	add_layout_noops("MediaController");   // the media caption's text view
+	extern void xl_movie_hooks(void);
+	xl_movie_hooks();
 	orig_drawingToScreen = method_setImplementation(class_getClassMethod([NSGraphicsContext class],
 		@selector(currentContextDrawingToScreen)), (IMP)xl_drawingToScreen);
 	Class vc = [NSView class];

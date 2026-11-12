@@ -3,7 +3,7 @@
 # <dir>/<arch>/<file>.o for the runtimes. Callers set ARCHS, ARCH and CC.
 
 XL_LIBS="-framework AppKit -framework Foundation -framework Carbon -framework OpenGL -framework WebKit \
-	-framework AudioToolbox -framework AVFoundation -framework AudioUnit -framework CoreAudio -framework Security \
+	-framework AudioToolbox -framework AVFoundation -framework AVKit -framework CoreMedia -framework AudioUnit -framework CoreAudio -framework Security \
 	-framework SystemConfiguration -framework IOKit -framework ApplicationServices -framework Accelerate \
 	-framework CoreServices -framework QuartzCore -framework ImageIO -framework PreferencePanes -framework UniformTypeIdentifiers -lsqlite3 -lz"
 

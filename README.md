@@ -83,8 +83,10 @@ The template is only read; changes go to a shadow file. It needs about 6 GB free
 - The apps are signed ad hoc, and the installer package is unsigned. The first
   time, macOS asks before opening the installer: Control-click it and choose
   Open, or allow it in System Settings > Privacy & Security.
-- QuickTime movies (QTKit `QTMovie`) are not available, so video clips in the
-  articles and the home screen do not play. Pictures and sound do.
+- Video clips and sounds in the articles and the Media Center play through
+  AVFoundation (`NSMovie` and `NSMovieView` in `xlate/rt/movie.m`). The home
+  screen's moving pictures use QTKit's `QTMovie`, which is not available, so
+  they stay still.
 - The screen saver, Dashboard widgets and Spotlight importer that MacKiev's
   installer also put in place are 32-bit plug-ins for hosts that no longer
   load them, and are not installed.

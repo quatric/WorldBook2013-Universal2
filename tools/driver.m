@@ -137,7 +137,9 @@ static void Key(NSString *aName)
 {
 	NSWindow *w = [NSApp modalWindow] ?: [NSApp keyWindow];
 	NSWindow *target = w ?: [sLastHit window];
-	NSDictionary *codes = @{ @"return": @[@"\r", @36], @"tab": @[@"\t", @48], @"esc": @[@"\x1b", @53] };
+	NSDictionary *codes = @{ @"return": @[@"\r", @36], @"tab": @[@"\t", @48], @"esc": @[@"\x1b", @53],
+		@"down": @[[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey], @125],
+		@"up": @[[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey], @126] };
 	NSArray *k = codes[aName];
 	NSEvent *e = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:[target windowNumber] context:nil characters:k[0] charactersIgnoringModifiers:k[0] isARepeat:NO keyCode:[k[1] unsignedShortValue]];
 	// no key window (the app is not activated): the clicked window becomes key

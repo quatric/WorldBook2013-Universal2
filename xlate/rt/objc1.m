@@ -918,7 +918,11 @@ static Class native_class(const char *nm)
 	Class c = objc_getClass(nm);
 	if (c)
 		return c;
-	if (!strcmp(nm, "NSMovieView") || !strcmp(nm, "QTMovieView")) {
+	if (!strcmp(nm, "NSMovieView")) {
+		extern Class xl_movie_view_class(const char *);
+		return xl_movie_view_class(nm);
+	}
+	if (!strcmp(nm, "QTMovieView")) {
 		c = objc_allocateClassPair([NSView class], nm, 0);
 		objc_registerClassPair(c);
 		return c;
