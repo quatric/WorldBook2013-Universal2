@@ -85,8 +85,8 @@ The template is only read; changes go to a shadow file. It needs about 6 GB free
   Open, or allow it in System Settings > Privacy & Security.
 - Video clips and sounds in the articles and the Media Center play through
   AVFoundation (`NSMovie` and `NSMovieView` in `xlate/rt/movie.m`). The home
-  screen's moving pictures use QTKit's `QTMovie`, which is not available, so
-  they stay still.
+  screen's moving pictures read the movie sample by sample through QuickTime
+  calls, which `xlate/rt/qtimport.m` answers from an `AVAssetReader`.
 - The screen saver, Dashboard widgets and Spotlight importer that MacKiev's
   installer also put in place are 32-bit plug-ins for hosts that no longer
   load them, and are not installed.

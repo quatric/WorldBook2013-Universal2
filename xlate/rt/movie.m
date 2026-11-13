@@ -9,8 +9,9 @@
 // The app also calls QuickTime functions on the movie (-QTMovie) and its
 // controller (-movieController): play hints, volume, clipping. Those are not
 // there either, and missing functions return 0 (bridge.m). -QTMovie is 0, as
-// the home screen's media provider then leaves the movie alone instead of
-// reading its frames with QuickTime; -movieController is a nonzero token.
+// the home screen's moving pictures read the movie's frames through QuickTime
+// calls: -QTMovie answers with an XLMovie on the file (qtimport.m) that those
+// calls are shimmed for. -movieController is a nonzero token.
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 #import <Cocoa/Cocoa.h>
@@ -45,11 +46,27 @@ static unsigned movie_token(id self, SEL _cmd)
 	return 1;
 }
 
-static unsigned movie_none(id self, SEL _cmd)
+static char kQTMovie;
+
+extern id xl_qt_movie_new(NSURL *url);
+extern uint32_t xl_qt_movie_handle(id movie);
+
+// the NSMovie's QuickTime Movie: a handle on an XLMovie kept with it
+static void *movie_QTMovie(id self, SEL _cmd)
 {
-	(void)self;
 	(void)_cmd;
-	return 0;
+	id m = objc_getAssociatedObject(self, &kQTMovie);
+	if (!m) {
+		NSURL *url = objc_getAssociatedObject(self, &kURL);
+		if (!url)
+			return 0;
+		m = [xl_qt_movie_new(url) autorelease];
+		if (!m)
+			return 0;
+		objc_setAssociatedObject(self, &kQTMovie, m, OBJC_ASSOCIATION_RETAIN);
+	}
+	xl_qt_movie_handle(m);   // registers the movie and its tracks
+	return m;   // the bridge turns the pointer into the guest's handle
 }
 
 // ---- NSMovieView ----------------------------------------------------------------------------
@@ -284,5 +301,5 @@ void xl_movie_hooks(void)
 	snprintf(t, sizeof t, "@@:@%s", @encode(BOOL));
 	add(m, "initWithURL:byReference:", (IMP)movie_initWithURL, t);
 	add(m, "URL", (IMP)movie_URL, "@@:");
-	add(m, "QTMovie", (IMP)movie_none, "I@:");
+	add(m, "QTMovie", (IMP)movie_QTMovie, "^v@:");
 }

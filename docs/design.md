@@ -214,3 +214,20 @@ that repeats, and the strip showed that photo again over the cards beside
 it (a translucent ghost of one card's photo on another). Preloading now
 starts once the view has drawn (`appkit.m`): at once where `-display` still
 draws it, else on a later turn of the run loop.
+
+## Home screen videos
+
+Some cards of the home screen's strip are movies (`MOVIES/vd00NNNN.mov`,
+H.264). SMKGLKit's `GLMovieEffect` plays them as the Mac OS X 10.4 QuickTime
+API: `-[NSMovie QTMovie]` gives the Movie, `GetMovieIndTrackType`,
+`GetTrackMedia` and `GetMediaSample` read its video media, and an ICM
+decompression sequence (`DecompressSequenceBeginS`, `...FrameWhen`) decodes
+each sample into a GWorld over the card's texture bitmap. `qtimport.m` keeps a
+Movie as an `XLMovie` on an `AVAsset` and its tracks as `XLTrack`s (a Track and
+its Media are one handle). The "sample" `GetMediaSample` returns is a 16-byte
+token (movie handle, media time) and the decompress call turns it into the
+frame an `AVAssetReader` delivers for that time, copied as ARGB to the GWorld's
+top left corner (the codec drew at the natural size with no matrix). The reader
+runs forward with one frame of look-ahead and restarts when the time goes back
+(the loop). `-QTMovie` returns the `XLMovie` as `void *`, so that the bridge
+makes the handle (a plain integer return was made a second handle).
