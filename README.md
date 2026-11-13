@@ -78,6 +78,17 @@ python3 tools/surf_extract.py "game/2013 World Book/2013 World Book.app/Contents
 
 The template is only read; changes go to a shadow file. It needs about 6 GB free.
 
+`make-dmg-folder.sh` builds the same image with the finished `2013 World Book`
+folder on it (the 11 apps, `Download`, the speech guide and the content inside the
+app) to drag into Applications, in place of the installer package. The
+disc's own `2013CDs` copy is left out, so the image is about 4.5 GB; the volume
+name, background, layout, volume icon and user guide are MacKiev's. It needs about
+12 GB free.
+
+```sh
+./make-dmg-folder.sh 2013WorldBookMac.dmg 17.0.0-U2D
+```
+
 ## Known issues
 
 - The apps are signed ad hoc, and the installer package is unsigned. The first
