@@ -231,3 +231,12 @@ top left corner (the codec drew at the natural size with no matrix). The reader
 runs forward with one frame of look-ahead and restarts when the time goes back
 (the loop). `-QTMovie` returns the `XLMovie` as `void *`, so that the bridge
 makes the handle (a plain integer return was made a second handle).
+
+## Home screen viewport
+
+`-[GLView drawRect:]` depends on the context's viewport, which `-reshape` and
+`-update` set from the view's bounds. After the Media Center was shown and left,
+the viewport was 412x304 while the view stayed 1440x878 (something else
+renders on the shared context at that size and leaves it): the layout drew in
+the corner, beside the previous full-size frame. `appkit.m` sets the viewport
+from the view's size in pixels at the start of every `drawRect:`.

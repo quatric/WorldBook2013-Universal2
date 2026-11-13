@@ -1,5 +1,7 @@
 // AppKit behaviour the 2013 code relies on that current AppKit dropped.
 #import <AppKit/AppKit.h>
+#define GL_SILENCE_DEPRECATION
+#import <OpenGL/gl.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -369,6 +371,44 @@ static void preloading_after_first_draw(void)
 	Method m = c ? class_getInstanceMethod(c, @selector(startPreloading)) : NULL;
 	if (m)
 		orig_start_preloading = method_setImplementation(m, (IMP)xl_start_preloading);
+}
+
+// ---- OpenGL viewport ------------------------------------------------------------------------
+// -[GLView drawRect:] relies on the context's viewport state, which -reshape
+// and -update set from the view's bounds. After the Media Center has been
+// shown and left, the viewport is 412x304 (it is not the view's size: the view
+// draws at 1440x878 throughout, and something else renders on the shared
+// context at that size and leaves it), so the layout came out in the corner,
+// a small copy of the home screen beside the previous full-size frame. Every
+// draw starts by setting the viewport to the view's size in pixels.
+static void gl_viewport_before_draw(Class c)
+{
+	Method m = c ? class_getInstanceMethod(c, @selector(drawRect:)) : NULL;
+	if (!m)
+		return;
+	static NSMutableSet *done;
+	if (!done)
+		done = [NSMutableSet new];
+	NSValue *key = [NSValue valueWithPointer:m];
+	if ([done containsObject:key])
+		return;
+	[done addObject:key];
+	IMP orig = method_getImplementation(m);
+	method_setImplementation(m, imp_implementationWithBlock(^(NSOpenGLView *self, NSRect r) {
+		NSOpenGLContext *ctx = [self openGLContext];
+		if (ctx) {
+			[ctx makeCurrentContext];
+			NSRect px = [self convertRectToBacking:[self bounds]];
+			glViewport(0, 0, (GLsizei)px.size.width, (GLsizei)px.size.height);
+		}
+		((void (*)(id, SEL, NSRect))orig)(self, @selector(drawRect:), r);
+	}));
+}
+
+static void gl_views_set_viewport(void)
+{
+	gl_viewport_before_draw(objc_getClass("GLView"));
+	gl_viewport_before_draw(objc_getClass("GLHomeScreenView"));
 }
 
 // ---- bundles translated into the executable ------------------------------------------------
@@ -902,6 +942,7 @@ void xl_appkit_hooks(void)
 	translated_bundles();
 	fitting_home_layout();
 	preloading_after_first_draw();
+	gl_views_set_viewport();
 	stable_line_fragments("HSExtendedTextContainer");
 	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
 		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");
