@@ -240,3 +240,17 @@ the viewport was 412x304 while the view stayed 1440x878 (something else
 renders on the shared context at that size and leaves it): the layout drew in
 the corner, beside the previous full-size frame. `appkit.m` sets the viewport
 from the view's size in pixels at the start of every `drawRect:`.
+
+## Toolbar pop-up menus and the sticky note
+
+- HSToolbarItem's viewer posed as AppKit's private `NSToolbarItemViewer` to
+  show an item's pop-up menu when pressed (Theme's list of skins); posing is
+  gone, so pressing Theme did nothing. `-[NSToolbarItemViewer mouseDown:]`
+  shows the menu of an item whose `alwaysShowsPopupMenu` is set, below the
+  item, and runs the original for every other item (`appkit.m`).
+- `StickyNoteView.nib` holds the note's text views as `NSTextTemplate`, which
+  10.2's Interface Builder archived `NSTextView` as and current AppKit no longer
+  has ("class not loaded"): a new note got its icon in the article but no
+  window. `+[NSBundle loadNibNamed:owner:]` builds that nib in code (a
+  `WBStickyNoteView` of 448x313, a one-line title on top, the content below,
+  the outlets set, then `-awakeFromNib`). Other nibs load as before.

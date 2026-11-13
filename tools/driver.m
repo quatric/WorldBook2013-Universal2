@@ -269,6 +269,23 @@ static void Run(NSString *aLine)
 		NSView *frame = [[w contentView] superview] ?: [w contentView];
 		sLastHit = [frame hitTest:[frame convertPoint:p fromView:nil]];
 		Log(@"%@ %@ in %@, hits %@ (app %@, window %@)", cmd, NSStringFromPoint(p), NSStringFromClass([w class]), [frame hitTest:[frame convertPoint:p fromView:nil]], [NSApp isActive] ? @"active" : @"inactive", [w isKeyWindow] ? @"key" : @"not key");
+	} else if ([cmd isEqualToString:@"activate"]) {
+		// activate: makes the app the active one, so that key events reach its key window
+		[NSApp activateIgnoringOtherApps:YES];
+		Log(@"activate: app %@", [NSApp isActive] ? @"active" : @"inactive");
+	} else if ([cmd isEqualToString:@"tbdown"]) {
+		// tbdown: sends a mouse-down to the view the last `mouse` landed on, as
+		// a method call (a toolbar item's pop-up menu tracks inside it, so it is
+		// started from the next turn of the run loop)
+		NSView *v = sLastHit;
+		NSWindow *w = [v window];
+		if (v && w) {
+			NSPoint p = [v convertPoint:NSMakePoint(10, 10) toView:nil];
+			NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:p modifierFlags:0 timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:[w windowNumber] context:nil eventNumber:0 clickCount:1 pressure:1];
+			Log(@"tbdown on %@", v);
+			dispatch_async(dispatch_get_main_queue(), ^{ [v mouseDown:down]; });
+		} else
+			Log(@"tbdown: no view");
 	} else if ([cmd isEqualToString:@"selrow"] || [cmd isEqualToString:@"openrow"]) {
 		// synthetic clicks do not select table rows (the table's tracking asks
 		// the hardware): selects row N of the table under the last click, or

@@ -411,6 +411,114 @@ static void gl_views_set_viewport(void)
 	gl_viewport_before_draw(objc_getClass("GLHomeScreenView"));
 }
 
+// ---- toolbar items with a pop-up menu ------------------------------------------------------
+// HSToolbarItem's viewer (HSToolbarItemViewer) posed as AppKit's private
+// NSToolbarItemViewer to show an item's pop-up menu (Theme's list of skins) when
+// it is pressed. Posing is gone, so the menu never came up and pressing Theme did
+// nothing. The private class's -mouseDown: now shows the menu of an item that
+// always shows one, below the item, and is left alone for every other item.
+static void toolbar_item_popup_menus(void)
+{
+	Class c = objc_getClass("NSToolbarItemViewer");
+	Method m = c ? class_getInstanceMethod(c, @selector(mouseDown:)) : NULL;
+	if (xl_verbose > 0)
+		xl_log("toolbar item viewer class %p, mouseDown %p", c, m);
+	if (!m)
+		return;
+	IMP orig = method_getImplementation(m);
+	method_setImplementation(m, imp_implementationWithBlock(^(NSView *self, NSEvent *e) {
+		id item = [self respondsToSelector:@selector(item)] ? [self performSelector:@selector(item)] : nil;
+		if (xl_verbose > 0)
+			xl_log("toolbar item viewer mouseDown: item %s always %d has %d", item ? class_getName(object_getClass(item)) : "none",
+				item && [item respondsToSelector:@selector(alwaysShowsPopupMenu)] ? (int)((BOOL (*)(id, SEL))objc_msgSend)(item, @selector(alwaysShowsPopupMenu)) : -1,
+				item && [item respondsToSelector:@selector(hasPopupMenu)] ? (int)((BOOL (*)(id, SEL))objc_msgSend)(item, @selector(hasPopupMenu)) : -1);
+		if (item && [item respondsToSelector:@selector(alwaysShowsPopupMenu)]
+			&& ((BOOL (*)(id, SEL))objc_msgSend)(item, @selector(alwaysShowsPopupMenu))
+			&& [item respondsToSelector:@selector(popupMenu)] && [item isEnabled]) {
+			NSMenu *menu = [item performSelector:@selector(popupMenu)];
+			if (xl_verbose > 0)
+				xl_log("toolbar item %s: pop-up menu with %d items", class_getName(object_getClass(item)), menu ? (int)[menu numberOfItems] : -1);
+			if (xl_verbose > 0)
+				for (NSMenuItem *mi in [menu itemArray])
+					xl_log("    menu item \"%s\" state %d", [[mi title] UTF8String], (int)[mi state]);
+			if (menu) {
+				[menu popUpMenuPositioningItem:nil
+					atLocation:NSMakePoint(0, [self isFlipped] ? NSHeight([self bounds]) : 0) inView:self];
+				return;
+			}
+		}
+		((void (*)(id, SEL, NSEvent *))orig)(self, @selector(mouseDown:), e);
+	}));
+}
+
+// ---- the sticky note's nib ------------------------------------------------------------------
+// StickyNoteView.nib holds the note's two text views as NSTextTemplate, the
+// stand-in a 10.2 Interface Builder archived NSTextView with and an
+// NSTextTemplate class current AppKit no longer has: loading the nib throws
+// "class not loaded", and a new sticky note got its icon in the article but no
+// window. The nib is rebuilt here: a WBStickyNoteView of 448x313 with the title
+// (one line, 25 high, on top) and the content (a scrolling text view), the
+// view's delegate for both, the loader's _stickyView and the view's two text
+// view outlets set, then its -awakeFromNib.
+static IMP orig_loadNibNamed;
+
+static NSScrollView *sticky_text(NSRect frame, BOOL scrolls, BOOL rich, NSTextView **out)
+{
+	NSScrollView *sv = [[[NSScrollView alloc] initWithFrame:frame] autorelease];
+	[sv setBorderType:NSNoBorder];
+	[sv setDrawsBackground:NO];
+	[sv setHasVerticalScroller:scrolls];
+	[sv setHasHorizontalScroller:NO];
+	[sv setAutohidesScrollers:YES];
+	[sv setAutoresizingMask:scrolls ? NSViewWidthSizable | NSViewHeightSizable : NSViewWidthSizable | NSViewMinYMargin];
+	NSTextView *tv = [[[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height)] autorelease];
+	[tv setMinSize:NSMakeSize(0, frame.size.height)];
+	[tv setMaxSize:NSMakeSize(1e7, 1e7)];
+	[tv setVerticallyResizable:scrolls];
+	[tv setHorizontallyResizable:NO];
+	[tv setAutoresizingMask:NSViewWidthSizable];
+	[[tv textContainer] setContainerSize:NSMakeSize(frame.size.width, 1e7)];
+	[[tv textContainer] setWidthTracksTextView:YES];
+	[tv setRichText:rich];
+	[tv setAllowsUndo:YES];
+	[tv setEditable:YES];
+	[tv setSelectable:YES];
+	[tv setDrawsBackground:NO];
+	[tv setFont:[NSFont fontWithName:@"Helvetica" size:12]];
+	[sv setDocumentView:tv];
+	*out = tv;
+	return sv;
+}
+
+static BOOL xl_loadNibNamed(id self, SEL _cmd, NSString *name, id owner)
+{
+	Class note = [name isEqualToString:@"StickyNoteView"] ? objc_getClass("WBStickyNoteView") : nil;
+	if (!note)
+		return ((BOOL (*)(id, SEL, NSString *, id))orig_loadNibNamed)(self, _cmd, name, owner);
+	NSView *view = [[note alloc] initWithFrame:NSMakeRect(0, 0, 448, 313)];   // the nib's top-level object, kept
+	[view setAutoresizesSubviews:YES];
+	NSTextView *title = nil, *content = nil;
+	NSScrollView *ts = sticky_text(NSMakeRect(0, 288, 448, 25), NO, NO, &title);
+	NSScrollView *cs = sticky_text(NSMakeRect(0, 0, 448, 288), YES, YES, &content);
+	[view addSubview:ts];
+	[view addSubview:cs];
+	[view setValue:title forKey:@"_titleTextView"];
+	[view setValue:content forKey:@"_contentTextView"];
+	[title setDelegate:view];
+	[content setDelegate:view];
+	[owner setValue:view forKey:@"_stickyView"];
+	if ([view respondsToSelector:@selector(awakeFromNib)])
+		[view awakeFromNib];
+	return YES;
+}
+
+static void sticky_note_nib(void)
+{
+	Method m = class_getClassMethod([NSBundle class], @selector(loadNibNamed:owner:));
+	if (m)
+		orig_loadNibNamed = method_setImplementation(m, (IMP)xl_loadNibNamed);
+}
+
 // ---- bundles translated into the executable ------------------------------------------------
 // Preference panes and plug-ins are i386 bundles the app loads with NSBundle.
 // Their code is translated with the app (xlate/images.txt) and their classes
@@ -943,6 +1051,8 @@ void xl_appkit_hooks(void)
 	fitting_home_layout();
 	preloading_after_first_draw();
 	gl_views_set_viewport();
+	toolbar_item_popup_menus();
+	sticky_note_nib();
 	stable_line_fragments("HSExtendedTextContainer");
 	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
 		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");
