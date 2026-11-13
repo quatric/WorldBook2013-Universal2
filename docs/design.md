@@ -245,9 +245,11 @@ from the view's size in pixels at the start of every `drawRect:`.
 
 - HSToolbarItem's viewer posed as AppKit's private `NSToolbarItemViewer` to
   show an item's pop-up menu when pressed (Theme's list of skins); posing is
-  gone, so pressing Theme did nothing. `-[NSToolbarItemViewer mouseDown:]`
-  shows the menu of an item whose `alwaysShowsPopupMenu` is set, below the
-  item, and runs the original for every other item (`appkit.m`).
+  gone, so pressing Theme did nothing. Current AppKit builds the toolbar from
+  glass views and does not hand the press to the viewer's `-mouseDown:`, so
+  `-[NSWindow sendEvent:]` (`appkit.m`) looks at every left mouse-down: on an
+  `NSToolbarItemViewer` whose item has `alwaysShowsPopupMenu` set it shows the
+  item's menu below it and consumes the event; everything else goes on.
 - `StickyNoteView.nib` holds the note's text views as `NSTextTemplate`, which
   10.2's Interface Builder archived `NSTextView` as and current AppKit no longer
   has ("class not loaded"): a new note got its icon in the article but no

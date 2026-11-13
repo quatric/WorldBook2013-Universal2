@@ -519,6 +519,56 @@ static void sticky_note_nib(void)
 		orig_loadNibNamed = method_setImplementation(m, (IMP)xl_loadNibNamed);
 }
 
+// A press on a toolbar item that always shows a pop-up menu (Theme) is caught
+// where the window gets the event, before it is routed: current AppKit does not
+// hand the press to -[NSToolbarItemViewer mouseDown:] the way 10.x did (the
+// toolbar is made of glass views now), so the viewer's own hook above is not
+// enough. XL_VERBOSE: where a mouse-down lands.
+static BOOL toolbar_popup_for_event(NSWindow *w, NSEvent *e)
+{
+	Class vc = objc_getClass("NSToolbarItemViewer");
+	if (!vc || !w || ![w contentView])
+		return NO;
+	NSView *top = [[w contentView] superview] ?: [w contentView];
+	NSView *v = [top hitTest:[top convertPoint:[e locationInWindow] fromView:nil]];
+	while (v && ![v isKindOfClass:vc])
+		v = [v superview];
+	id item = v && [v respondsToSelector:@selector(item)] ? [v performSelector:@selector(item)] : nil;
+	if (!item || ![item respondsToSelector:@selector(alwaysShowsPopupMenu)]
+		|| !((BOOL (*)(id, SEL))objc_msgSend)(item, @selector(alwaysShowsPopupMenu))
+		|| ![item respondsToSelector:@selector(popupMenu)] || ![item isEnabled])
+		return NO;
+	NSMenu *menu = [item performSelector:@selector(popupMenu)];
+	if (!menu)
+		return NO;
+	if (xl_verbose > 0)
+		xl_log("toolbar item %s: pop-up menu with %d items", class_getName(object_getClass(item)), (int)[menu numberOfItems]);
+	[menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, [v isFlipped] ? NSHeight([v bounds]) : 0) inView:v];
+	return YES;
+}
+
+static void log_mouse_downs(void)
+{
+	Method m = class_getInstanceMethod([NSWindow class], @selector(sendEvent:));
+	IMP orig = method_getImplementation(m);
+	method_setImplementation(m, imp_implementationWithBlock(^(NSWindow *self, NSEvent *e) {
+		if ([e type] == NSEventTypeLeftMouseDown) {
+			if (xl_verbose > 0) {
+				NSView *top = [[self contentView] superview] ?: [self contentView];
+				NSView *hit = [top hitTest:[top convertPoint:[e locationInWindow] fromView:nil]];
+				NSMutableString *chain = [NSMutableString string];
+				for (NSView *v = hit; v; v = [v superview])
+					[chain appendFormat:@" %s", class_getName(object_getClass(v))];
+				xl_log("mouseDown in %s at %g,%g: hit%s", class_getName(object_getClass(self)), [e locationInWindow].x,
+					[e locationInWindow].y, [chain UTF8String]);
+			}
+			if (toolbar_popup_for_event(self, e))
+				return;
+		}
+		((void (*)(id, SEL, NSEvent *))orig)(self, @selector(sendEvent:), e);
+	}));
+}
+
 // ---- bundles translated into the executable ------------------------------------------------
 // Preference panes and plug-ins are i386 bundles the app loads with NSBundle.
 // Their code is translated with the app (xlate/images.txt) and their classes
@@ -1053,6 +1103,7 @@ void xl_appkit_hooks(void)
 	gl_views_set_viewport();
 	toolbar_item_popup_menus();
 	sticky_note_nib();
+	log_mouse_downs();
 	stable_line_fragments("HSExtendedTextContainer");
 	if (!class_respondsToSelector([NSNumber class], @selector(isEqualToString:)))
 		class_addMethod([NSNumber class], @selector(isEqualToString:), (IMP)xl_number_isEqualToString, "c@:@");
